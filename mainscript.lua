@@ -56,6 +56,32 @@ end
 SaveManager:SetLibrary(Library)
 SaveManager:SetFolder("FurryHBE")
 
+-- Make every tooltip wrap to multiple short lines so long descriptions can't run
+-- off the screen. We word-wrap the text before LinoriaLib builds the tooltip.
+-- (Patched before any UI is created so it applies to all controls. Best-effort.)
+pcall(function()
+	local orig = Library.AddToolTip
+	if type(orig) ~= "function" then return end
+	local function wrap(s, width)
+		s = tostring(s)
+		if #s <= width and not s:find("\n") then return s end
+		local out, line = {}, ""
+		for word in s:gmatch("%S+") do
+			if #line + #word + 1 > width then
+				table.insert(out, line); line = word
+			else
+				line = (line == "") and word or (line .. " " .. word)
+			end
+		end
+		if line ~= "" then table.insert(out, line) end
+		return table.concat(out, "\n")
+	end
+	Library.AddToolTip = function(self, info, hover)
+		if type(info) == "string" then info = wrap(info, 44) end
+		return orig(self, info, hover)
+	end
+end)
+
 -- GUI-based Drawing fallback for Potassium
 local DrawingFallback = {}
 DrawingFallback.__index = DrawingFallback
@@ -276,24 +302,25 @@ local errorLog = {}
 local uiElementStatus = {}
 local uiElementReferences = {}
 
+local lastLogKey, lastLogTime = nil, 0
 local function logError(context, err, uiElement)
-	table.insert(errorLog, {
-		context = context,
-		error = tostring(err),
-		time = tick(),
-		uiElement = uiElement
-	})
+	local now = tick()
+	local key = tostring(context) .. "|" .. tostring(err)
+	-- Throttle identical errors. The ESP/update loops run every frame, so a single
+	-- recurring failure used to flood the log, spam warnings, and fire the UI flash
+	-- (which spawns 3 tasks each) ~60x/sec -- the real cause of the freeze/lag, the
+	-- runaway error text clipping the UI, and Clear Errors "glitching".
+	if key == lastLogKey and (now - lastLogTime) < 1 then return end
+	lastLogKey, lastLogTime = key, now
+
+	table.insert(errorLog, { context = context, error = tostring(err), time = now, uiElement = uiElement })
+	while #errorLog > 50 do table.remove(errorLog, 1) end  -- cap so it can't grow unbounded
+
 	warn("[FurryHBE Error] " .. context .. ": " .. tostring(err))
-	
-	-- Flash UI element if provided
 	if uiElement and uiElementReferences[uiElement] then
-		flashUIElement(uiElement)
+		pcall(flashUIElement, uiElement)
 	end
-	
-	-- Update console tab visibility (if function exists)
-	if updateConsoleTab then
-		pcall(updateConsoleTab)
-	end
+	if updateConsoleTab then pcall(updateConsoleTab) end
 end
 
 local function safeCall(context, fn, ...)
@@ -799,7 +826,10 @@ hitboxGroupbox:AddButton("Clear Scanned Parts", function()
 	updatePlayers()
 	Library:Notify("Cleared " .. #toRemove .. " scanned part(s)")
 end):AddToolTip("Remove every part added via the Part Scanner (keeps the default body parts)")
-hitboxGroupbox:AddSlider("extenderTransparency", { Text = "Transparency", Min = 0, Max = 1, Default = 0.5, Rounding = 2, Tooltip = "Transparency of extended hitboxes (0 = visible, 1 = invisible)" }):OnChanged(updatePlayers)
+hitboxGroupbox:AddSlider("extenderTransparency", { Text = "Transparency", Min = 0, Max = 1, Default = 0.5, Rounding = 2, Tooltip = "Transparency of extended hitboxes (0 = visible, 1 = invisible). (Default: 0.5)" }):OnChanged(updatePlayers)
+hitboxGroupbox:AddToggle("outlineMode", { Text = "Outline Only", Default = false, Tooltip = "Hide the enlarged hitbox block and show only a coloured wireframe outline at the hitbox size (the part is still extended for hit-reg). (Default: OFF)" }):OnChanged(updatePlayers)
+hitboxGroupbox:AddLabel("Outline Color"):AddColorPicker("outlineColor", { Title = "Outline Color", Default = Color3.fromRGB(255, 0, 0) })
+hitboxGroupbox:AddSlider("outlineTransparency", { Text = "Outline Transparency", Min = 0, Max = 1, Default = 0, Rounding = 2, Tooltip = "Transparency of the outline lines (0 = solid). (Default: 0)" }):OnChanged(updatePlayers)
 hitboxGroupbox:AddInput("customPartName", { Text = "Custom Part Name", Default = "HeadHB", Tooltip = "Name for custom body part matching" }):OnChanged(updatePlayers)
 hitboxGroupbox:AddDropdown("extenderPartList", { Text = "Body Parts", AllowNull = true, Multi = true, Values = table.clone(DEFAULT_BODY_PARTS), Default = "HumanoidRootPart", Tooltip = "Select which body parts to extend" }):OnChanged(updatePlayers)
 
@@ -838,13 +868,15 @@ filterGroupbox:AddDropdown("weaponList", { Text = "Ignored Weapons", AllowNull =
 
 -- Anti-Detection
 antiDetectionGroupbox:AddToggle("randomizationToggled", { Text = "Randomization", Default = false, Tooltip = "Add slight randomization to hitbox sizes" }):OnChanged(updatePlayers)
-antiDetectionGroupbox:AddSlider("randomizationAmount", { Text = "Random Amount", Min = 0, Max = 5, Default = 1, Rounding = 1, Tooltip = "Maximum random size variation" }):OnChanged(updatePlayers)
+antiDetectionGroupbox:AddSlider("randomizationAmount", { Text = "Random Amount", Min = 0, Max = 5, Default = 1, Rounding = 1, Tooltip = "Maximum random size variation. (Default: 1)" }):OnChanged(updatePlayers)
+antiDetectionGroupbox:AddToggle("smartJitter", { Text = "Smart Jitter (sine)", Default = false, Tooltip = "Use a smooth sine wave for the size jitter instead of random snapping (harder to fingerprint). (Default: OFF)" }):OnChanged(updatePlayers)
+antiDetectionGroupbox:AddSlider("maxPlausibleMult", { Text = "Max Plausible x", Min = 0, Max = 50, Default = 0, Rounding = 1, Tooltip = "Cap the hitbox at this multiple of the part's real size. 0 = no cap. Keeps extension believable. (Default: 0)" }):OnChanged(updatePlayers)
 antiDetectionGroupbox:AddToggle("humanizationToggled", { Text = "Humanization Delay", Default = false, Tooltip = "Add delay between target switches" }):OnChanged(updatePlayers)
 antiDetectionGroupbox:AddSlider("humanizationDelay", { Text = "Delay (ms)", Min = 0, Max = 1000, Default = 100, Rounding = 1, Tooltip = "Delay in milliseconds between target switches" }):OnChanged(updatePlayers)
 antiDetectionGroupbox:AddToggle("legitModeToggled", { Text = "Legit Mode", Default = false, Tooltip = "Only extend when crosshair is near target" }):OnChanged(updatePlayers)
 antiDetectionGroupbox:AddSlider("legitModeFOV", { Text = "Legit FOV", Min = 1, Max = 50, Default = 10, Rounding = 1, Tooltip = "FOV threshold for legit mode" }):OnChanged(updatePlayers)
 antiDetectionGroupbox:AddToggle("autoOffWhenDead", { Text = "Auto-Off When Dead", Default = false, Tooltip = "Automatically stop extending while you are dead or spectating" }):OnChanged(updatePlayers)
-antiDetectionGroupbox:AddToggle("seatDisableHBE", { Text = "Disable While Seated", Default = false, Tooltip = "Stop extending hitboxes while YOU are sitting in any seat (vehicle, turret, anchored seat, etc.)" }):OnChanged(updatePlayers)
+antiDetectionGroupbox:AddToggle("seatDisableHBE", { Text = "Disable While Seated", Default = true, Tooltip = "Stop extending hitboxes while YOU sit in any seat (car/turret/etc).\nPrevents the in-vehicle freeze where players & cars look stuck.\nResumes automatically when you get out. (Default: ON)" }):OnChanged(updatePlayers)
 antiDetectionGroupbox:AddToggle("seatRadiusMode", { Text = "Seated: Nearby Only", Default = false, Tooltip = "When seated, only disable hitboxes for players within the radius below instead of everyone" }):OnChanged(updatePlayers)
 antiDetectionGroupbox:AddSlider("seatRadius", { Text = "Seated Radius (studs)", Min = 5, Max = 200, Default = 30, Rounding = 1, Tooltip = "Radius used by 'Seated: Nearby Only'" }):OnChanged(updatePlayers)
 
@@ -879,7 +911,7 @@ Toggles.espNameToggled:OnChanged(updatePlayers)
 Options.espNameColor1:OnChanged(updatePlayers)
 Options.espNameColor2:OnChanged(updatePlayers)
 espNameGroupbox:AddToggle("espNameUseTeamColor", { Text = "Use Team Color", Default = false, Tooltip = "Use team color for name ESP" }):OnChanged(updatePlayers)
-espNameGroupbox:AddDropdown("espNameType", { Text = "Name Type", AllowNull = false, Multi = false, Values = { "Display Name", "Account Name" }, Default = "Display Name", Tooltip = "Choose which name to display" }):OnChanged(updatePlayers)
+espNameGroupbox:AddDropdown("espNameType", { Text = "Name Type", AllowNull = false, Multi = false, Values = { "Display Name", "Account Name", "Both (Display + @User)" }, Default = "Display Name", Tooltip = "Which name to show.\nBoth = DisplayName (@AccountName). (Default: Display Name)" }):OnChanged(updatePlayers)
 espNameGroupbox:AddToggle("espDistanceToggled", { Text = "Show Distance", Default = false, Tooltip = "Show distance to player" }):OnChanged(updatePlayers)
 espNameGroupbox:AddToggle("espTeamToggled", { Text = "Show Team Name", Default = false, Tooltip = "Show a tiny team-name subscript below the player's name" }):OnChanged(updatePlayers)
 espNameGroupbox:AddSlider("espNameSize", { Text = "Name Text Size", Min = 8, Max = 36, Default = 14, Rounding = 0, Tooltip = "Font size of ESP names. Smaller = far less overlap when players clump together." })
@@ -894,6 +926,7 @@ espChamsGroupbox:AddToggle("espHighlightUseTeamColor", { Text = "Use Team Color"
 espChamsGroupbox:AddDropdown("espHighlightDepthMode", { Text = "Depth Mode", AllowNull = false, Multi = false, Values = { "Occluded", "AlwaysOnTop" }, Default = "Occluded", Tooltip = "How chams render through walls" }):OnChanged(updatePlayers)
 espChamsGroupbox:AddSlider("espHighlightFillTransparency", { Text = "Fill Transparency", Min = 0, Max = 1, Default = 0.5, Rounding = 2, Tooltip = "Transparency of chams fill" }):OnChanged(updatePlayers)
 espChamsGroupbox:AddSlider("espHighlightOutlineTransparency", { Text = "Outline Transparency", Min = 0, Max = 1, Default = 0, Rounding = 2, Tooltip = "Transparency of chams outline" }):OnChanged(updatePlayers)
+espChamsGroupbox:AddToggle("espChamsGlow", { Text = "Glow Pulse", Default = false, Tooltip = "Animate the chams outline so it pulses/glows. (Default: OFF)" })
 
 -- Advanced ESP
 espAdvancedGroupbox:AddToggle("espHealthBarToggled", { Text = "Health Bar", Default = false, Tooltip = "Show health bar above player" }):OnChanged(updatePlayers)
@@ -901,6 +934,10 @@ espAdvancedGroupbox:AddToggle("espHealthTextToggled", { Text = "Health Text", De
 espAdvancedGroupbox:AddToggle("espBoxToggled", { Text = "2D Box", Default = false, Tooltip = "Show 2D box around player" }):OnChanged(updatePlayers)
 espAdvancedGroupbox:AddSlider("espBoxScale", { Text = "2D Box Size", Min = 0.3, Max = 1.5, Default = 0.85, Rounding = 2, Tooltip = "Scale of the 2D box. Lower = tighter boxes that overlap less when players bunch up." })
 espAdvancedGroupbox:AddToggle("espAntiOverlap", { Text = "Anti-Overlap Names", Default = true, Tooltip = "Nudge ESP names apart when players clump together so they don't render on top of each other." })
+espAdvancedGroupbox:AddToggle("espRainbow", { Text = "Rainbow ESP", Default = false, Tooltip = "Cycle every player's ESP (name/box/tracer/skeleton/chams) through a rainbow. (Default: OFF)" })
+espAdvancedGroupbox:AddSlider("espRainbowSpeed", { Text = "Rainbow Speed", Min = 0.1, Max = 3, Default = 0.7, Rounding = 2, Tooltip = "How fast the rainbow cycles. (Default: 0.7)" })
+espAdvancedGroupbox:AddSlider("espThickness", { Text = "Line Thickness", Min = 1, Max = 5, Default = 1, Rounding = 1, Tooltip = "Thickness of box/tracer/skeleton lines. (Default: 1)" })
+espAdvancedGroupbox:AddToggle("espDistanceFade", { Text = "Distance Fade", Default = false, Tooltip = "Fade ESP out as players get farther away (relative to ESP Max Distance). Native Drawing only. (Default: OFF)" })
 espAdvancedGroupbox:AddSlider("espOverlapGap", { Text = "Overlap Spacing", Min = 8, Max = 40, Default = 16, Rounding = 0, Tooltip = "Vertical pixels enforced between names by Anti-Overlap." })
 espAdvancedGroupbox:AddToggle("espSkeletonToggled", { Text = "Skeleton ESP", Default = false, Tooltip = "Draw lines between the character's bones" }):OnChanged(updatePlayers)
 espAdvancedGroupbox:AddToggle("espOffscreenToggled", { Text = "Off-Screen Markers", Default = false, Tooltip = "Show an edge marker pointing toward off-screen players" }):OnChanged(updatePlayers)
@@ -935,14 +972,46 @@ whitelistGroupbox:AddButton("Refresh Player Lists", function()
 	Library:Notify("Player lists refreshed (" .. added .. " entries added)")
 end):AddToolTip("Re-sync the whitelist / priority / ignore dropdowns with everyone currently in the server")
 whitelistGroupbox:AddDropdown("whitelistPlayerList", { Text = "Whitelisted Players", AllowNull = true, Multi = true, Values = {}, Tooltip = "Players whitelisted from HBE" }):OnChanged(updatePlayers)
+whitelistGroupbox:AddToggle("espWhitelisted", { Text = "Keep ESP on Whitelisted", Default = true, Tooltip = "Whitelisted players keep their ESP; only their hitbox extension is skipped.\n(Default: ON)" })
 local whitelistCountLabel = whitelistGroupbox:AddLabel("Whitelisted: 0")
+
+-- Whitelist auto-persistence: saved to disk and restored on every execute, so you
+-- never have to re-whitelist everyone again (no full config-save required). It also
+-- re-applies when a whitelisted player rejoins the server.
+local WL_FILE = "FurryHBE_Whitelist.json"
+local savedWhitelist = {}
+local function applyWhitelist()
+	local list = Options.whitelistPlayerList
+	if not list then return end
+	local val = {}
+	for _, n in ipairs(savedWhitelist) do
+		if not table.find(list.Values, n) then table.insert(list.Values, n) end
+		val[n] = true
+	end
+	list:SetValues()
+	pcall(function() list:SetValue(val) end)
+end
+local function saveWhitelist()
+	savedWhitelist = Options.whitelistPlayerList:GetActiveValues()
+	if writefile then pcall(function() writefile(WL_FILE, game:GetService("HttpService"):JSONEncode(savedWhitelist)) end) end
+end
+pcall(function()
+	if isfile and readfile and isfile(WL_FILE) then
+		local ok, t = pcall(function() return game:GetService("HttpService"):JSONDecode(readfile(WL_FILE)) end)
+		if ok and type(t) == "table" then savedWhitelist = t end
+	end
+end)
+applyWhitelist()
+Options.whitelistPlayerList:OnChanged(saveWhitelist)
+Players.PlayerAdded:Connect(function() task.wait(0.25); pcall(applyWhitelist) end)
 
 priorityGroupbox:AddToggle("prioritySystemToggled", { Text = "Enable Priority System", Default = false, Tooltip = "Always extend/ESP priority players" }):OnChanged(updatePlayers)
 priorityGroupbox:AddDropdown("priorityPlayerList", { Text = "Priority Players", AllowNull = true, Multi = true, Values = {}, Tooltip = "High priority players" }):OnChanged(updatePlayers)
+priorityGroupbox:AddToggle("priorityFlash", { Text = "Flash Priority Targets", Default = true, Tooltip = "Rainbow-flash every ESP element (name, box, tracer, skeleton, chams, off-screen marker) of priority players so they stand out" })
 local priorityCountLabel = priorityGroupbox:AddLabel("Priority: 0")
 
 -- Profiles Tab
-local profilesTab = mainWindow:AddTab("Profiles")
+local profilesTab = mainWindow:AddTab("Settings")
 local profilesGroupbox = profilesTab:AddLeftGroupbox("Configuration Profiles")
 
 local profiles = {
@@ -1031,14 +1100,11 @@ end)
 -- single file (see the "INLINED ADD-ONS" section near the bottom). There is no
 -- longer any separate-file loader -- everything ships in mainscript.lua.
 
--- Emergency Tab
-local emergencyTab = mainWindow:AddTab("Emergency")
-local emergencyGroupbox = emergencyTab:AddLeftGroupbox("Fixes")
-
--- Console Tab (hidden by default, shows on errors)
-local consoleTab = mainWindow:AddTab("Console")
-local consoleGroupbox = consoleTab:AddLeftGroupbox("Error Console")
-local consoleOutput = consoleGroupbox:AddLabel("No errors detected")
+-- Emergency + Console are folded into the Settings tab (formerly Profiles) so the
+-- tab bar isn't so spread out.
+local emergencyGroupbox = profilesTab:AddRightGroupbox("Fixes")
+local consoleGroupbox = profilesTab:AddRightGroupbox("Error Console")
+local consoleOutput = consoleGroupbox:AddLabel("No errors detected", true)  -- wrap so long errors don't clip off-screen
 local consoleCopyButton = consoleGroupbox:AddButton("Copy Latest Error", function()
 	if #errorLog > 0 then
 		local latestError = errorLog[#errorLog]
@@ -1065,18 +1131,15 @@ local consoleClearButton = consoleGroupbox:AddButton("Clear Errors", function()
 	Library:Notify("Error log cleared")
 end):AddToolTip("Clear all errors from the log")
 
--- Hide console tab initially. LinoriaLib tabs use ShowTab/HideTab (there is no
--- SetVisible). Wrapped in pcall so a fork without these methods can't crash.
-pcall(function() consoleTab:HideTab() end)
-
--- Function to update console tab visibility
+-- The Error Console now lives in the Settings tab (always present). This just
+-- refreshes its label instead of showing/hiding a dedicated tab.
 function updateConsoleTab()
 	if #errorLog > 0 then
-		pcall(function() consoleTab:ShowTab() end)
 		local latestError = errorLog[#errorLog]
-		consoleOutput:SetText("Latest Error:\n" .. latestError.error .. "\n\nContext: " .. latestError.context)
+		local msg = tostring(latestError.error)
+		if #msg > 180 then msg = msg:sub(1, 180) .. "..." end  -- truncate so it can't overflow
+		consoleOutput:SetText("[" .. #errorLog .. "] " .. latestError.context .. ":\n" .. msg)
 	else
-		pcall(function() consoleTab:HideTab() end)
 		consoleOutput:SetText("No errors detected")
 	end
 end
@@ -1736,12 +1799,15 @@ function addPlayer(player)
 	if players[player] then return end -- Fix duplicate player entries
 	
 	local success, err = pcall(function()
-		table.insert(Options.ignorePlayerList.Values, player.Name)
-		updateList(Options.ignorePlayerList)
-		table.insert(Options.whitelistPlayerList.Values, player.Name)
-		updateList(Options.whitelistPlayerList)
-		table.insert(Options.priorityPlayerList.Values, player.Name)
-		updateList(Options.priorityPlayerList)
+		-- Guard each insert so names never duplicate (the whitelist auto-persist may
+		-- have pre-seeded the same name, and rejoins could otherwise stack entries).
+		for _, listName in ipairs({ "ignorePlayerList", "whitelistPlayerList", "priorityPlayerList" }) do
+			local list = Options[listName]
+			if list and not table.find(list.Values, player.Name) then
+				table.insert(list.Values, player.Name)
+				updateList(list)
+			end
+		end
 	end)
 	
 	if not success then
@@ -1927,7 +1993,22 @@ function addPlayer(player)
 		end
 		
 		if Toggles.randomizationToggled.Value then
-			baseSize = baseSize + (math.random() * 2 - 1) * Options.randomizationAmount.Value
+			local amt = Options.randomizationAmount.Value
+			if Toggles.smartJitter and Toggles.smartJitter.Value then
+				-- Smooth sine-based jitter -- less detectable than random per-frame snapping.
+				baseSize = baseSize + math.sin(tick() * 3) * amt
+			else
+				baseSize = baseSize + (math.random() * 2 - 1) * amt
+			end
+		end
+
+		-- Max-plausible cap: never exceed this multiple of the part's REAL size, so the
+		-- extension stays within a believable range. 0 = off.
+		if Options.maxPlausibleMult and Options.maxPlausibleMult.Value > 0 then
+			local d = defaultProperties[part]
+			local realSize = (d and d.Size) or part.Size
+			local cap = math.max(realSize.X, realSize.Y, realSize.Z) * Options.maxPlausibleMult.Value
+			baseSize = math.min(baseSize, math.max(2, cap))
 		end
 
 		-- Auto-Expand in FOV: grow the hitbox when the target sits near the crosshair.
@@ -2034,6 +2115,25 @@ function addPlayer(player)
 
 			-- Streamer Mode forces the enlarged hitbox fully transparent.
 			local extTransparency = Bridge.Streamer.hideHitbox and 1 or Options.extenderTransparency.Value
+			-- Outline Mode: keep the hitbox enlarged (for hit-reg) but make the block
+			-- invisible and draw a coloured wireframe instead, so the body isn't hidden
+			-- behind a big transparent box.
+			local outline = part:FindFirstChild("FurryHBE_Outline")
+			if Toggles.outlineMode and Toggles.outlineMode.Value then
+				extTransparency = 1
+				if not outline then
+					outline = Instance.new("SelectionBox")
+					outline.Name = "FurryHBE_Outline"
+					outline.Adornee = part
+					outline.LineThickness = 0.03
+					outline.SurfaceTransparency = 1
+					outline.Parent = part
+				end
+				outline.Color3 = (Options.outlineColor and Options.outlineColor.Value) or Color3.fromRGB(255, 0, 0)
+				outline.Transparency = (Options.outlineTransparency and Options.outlineTransparency.Value) or 0
+			elseif outline then
+				outline:Destroy()
+			end
 			part.Transparency = extTransparency
 
 			if part.Name == "Head" then
@@ -2049,6 +2149,8 @@ function addPlayer(player)
 			part.Size = d.Size
 			part.Transparency = d.Transparency
 			currentSizes[part] = d.Size
+			local ob = part:FindFirstChild("FurryHBE_Outline")
+			if ob then ob:Destroy() end
 
 			if part.Name == "Head" then
 				local face = part:FindFirstChild("face")
@@ -2060,6 +2162,9 @@ function addPlayer(player)
 	end
 
 	function playerIdx:Update()
+		-- Adaptive recovery: if the character reference went stale (respawn/timing),
+		-- re-grab it instead of going dark until something else refreshes it.
+		if (not playerChar or not playerChar.Parent) and player then playerChar = player.Character end
 		if not playerChar then return end
 		debounce = true
 		for _, v in pairs(playerChar:GetChildren()) do
@@ -2087,6 +2192,8 @@ function addPlayer(player)
 					v.Transparency = d.Transparency
 					currentSizes[v] = d.Size
 						appliedProps[v] = { Size = d.Size, Transparency = d.Transparency, CanCollide = d.CanCollide, Massless = d.Massless }
+					local ob = v:FindFirstChild("FurryHBE_Outline")
+					if ob then ob:Destroy() end
 					if v.Name == "Head" then
 						local face = v:FindFirstChild("face")
 						if face then
@@ -2100,13 +2207,20 @@ function addPlayer(player)
 	end
 
 	-- ESP with enhancements
+	-- Only ever return a BasePart. The old version did a bare substring match and
+	-- happily returned accessory MODELS like "TorsoStrap" (matches "Torso"), then
+	-- `.Position` on a Model threw "Position is not a valid member of Model" --
+	-- the recurring UpdateESP error, worst on custom rigs with extra accessories.
 	local function FindFirstChildMatching(parent, name)
 		if not parent then return nil end
-		for _,v in pairs(parent:GetChildren()) do
-			if string.match(v.Name, name) then
+		local exact = parent:FindFirstChild(name)
+		if exact and exact:IsA("BasePart") then return exact end
+		for _, v in pairs(parent:GetChildren()) do
+			if v:IsA("BasePart") and string.match(v.Name, name) then
 				return v
 			end
 		end
+		return nil
 	end
 
 	local nameEsp = DrawingFallback.new("Text")
@@ -2186,7 +2300,17 @@ function addPlayer(player)
 		healthText.Visible = false
 		offscreenMarker.Visible = false
 		hideSkeleton()
-		if not playerChar or isIgnored() or isDead() then
+		-- Adaptive recovery: re-grab a stale character so ESP self-heals on respawn.
+		if (not playerChar or not playerChar.Parent) and player then playerChar = player.Character end
+		-- ESP is INDEPENDENT of the HBE ignore filters (HBE max distance, HBE FOV
+		-- filter, team, weapon). Those used to gate ESP via isIgnored(), which is why
+		-- ESP flickered off when a target left HBE range/FOV (out of range, behind a
+		-- car, just respawned/joined) and only popped back when you aimed at or shot
+		-- them. ESP now uses ONLY its own gates: espMaxDistance and the optional
+		-- espFOVFilter below. Whitelisted players still show ESP unless you turn the
+		-- "Keep ESP on Whitelisted" toggle off.
+		local hideForWL = isWhitelisted(player) and not (Toggles.espWhitelisted and Toggles.espWhitelisted.Value)
+		if not playerChar or isDead() or hideForWL then
 			nameEsp.Visible = false
 			healthBar.Visible = false
 			boxEsp.Visible = false
@@ -2215,6 +2339,23 @@ function addPlayer(player)
 			return
 		end
 		
+		-- Rainbow colour: priority players flash to stand out; OR, if global Rainbow
+		-- ESP is on, every player cycles. Applied wherever `flashCol` is used below.
+		local flashCol = nil
+		local rainbowOn = Toggles.espRainbow and Toggles.espRainbow.Value
+		local prioFlash = Toggles.priorityFlash and Toggles.priorityFlash.Value and isPriority(player)
+		if rainbowOn or prioFlash then
+			local spd = (Options.espRainbowSpeed and Options.espRainbowSpeed.Value) or 0.7
+			flashCol = Color3.fromHSV((tick() * spd) % 1, 1, 1)
+		end
+		-- Line thickness + distance fade (fade is native-Drawing only; harmless on the GUI fallback).
+		local thick = (Options.espThickness and Options.espThickness.Value) or 1
+		local fade = 0
+		if Toggles.espDistanceFade and Toggles.espDistanceFade.Value then
+			local md = (Options.espMaxDistance and Options.espMaxDistance.Value) or 1000
+			if md > 0 then fade = math.clamp(distance / md, 0, 0.85) end
+		end
+
 		local target = FindFirstChildMatching(playerChar, "Torso")
 		if not target then target = FindFirstChildMatching(playerChar, "UpperTorso") end
 		if not target then target = FindFirstChildMatching(playerChar, "HumanoidRootPart") end
@@ -2227,10 +2368,13 @@ function addPlayer(player)
 			if vis then
 				-- Name ESP
 				if Toggles.espNameToggled.Value then
-					if Options.espNameType.Value == "Display Name" then
-						nameEsp.Text = player.DisplayName
-					else
+					local nt = Options.espNameType.Value
+					if nt == "Account Name" then
 						nameEsp.Text = player.Name
+					elseif nt == "Both (Display + @User)" then
+						nameEsp.Text = player.DisplayName .. " (@" .. player.Name .. ")"
+					else
+						nameEsp.Text = player.DisplayName
 					end
 					
 					if Toggles.espDistanceToggled.Value then
@@ -2242,7 +2386,9 @@ function addPlayer(player)
 					else
 						nameEsp.Color = Options.espNameColor1.Value
 					end
-					nameEsp.OutlineColor = Options.espNameColor2.Value
+					nameEsp.Color = flashCol or nameEsp.Color
+						pcall(function() nameEsp.Transparency = fade end)
+						nameEsp.OutlineColor = Options.espNameColor2.Value
 					nameEsp.Position = Vector2.new(pos.X, pos.Y)
 					-- User-controlled fixed size (no distance inflation) so names stay
 					-- legible and don't balloon/overlap when players clump together.
@@ -2330,7 +2476,9 @@ function addPlayer(player)
 						local width = height * 0.5
 						boxEsp.Size = Vector2.new(width, height)
 						boxEsp.Position = Vector2.new(pos.X - width / 2, pos.Y - height / 2)
-						boxEsp.Color = Options.espNameColor1.Value
+						boxEsp.Color = flashCol or Options.espNameColor1.Value
+						boxEsp.Thickness = thick
+						pcall(function() boxEsp.Transparency = fade end)
 						boxEsp.Visible = true
 					else
 						boxEsp.Visible = false
@@ -2343,7 +2491,9 @@ function addPlayer(player)
 				if Toggles.espTracerToggled.Value then
 					tracer.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
 					tracer.To = Vector2.new(pos.X, pos.Y)
-					tracer.Color = Options.espTracerColor.Value
+					tracer.Color = flashCol or Options.espTracerColor.Value
+					tracer.Thickness = thick
+					pcall(function() tracer.Transparency = fade end)
 					tracer.Visible = true
 				else
 					tracer.Visible = false
@@ -2352,11 +2502,11 @@ function addPlayer(player)
 				-- Skeleton ESP (connects bones; missing parts are skipped)
 				if Toggles.espSkeletonToggled.Value then
 					local idx = 0
-					local col = Toggles.espNameUseTeamColor.Value and player.TeamColor.Color or Options.espNameColor1.Value
+					local col = flashCol or (Toggles.espNameUseTeamColor.Value and player.TeamColor.Color or Options.espNameColor1.Value)
 					for _, bone in ipairs(SKELETON_BONES) do
 						local a = playerChar:FindFirstChild(bone[1])
 						local b = playerChar:FindFirstChild(bone[2])
-						if a and b then
+						if a and b and a:IsA("BasePart") and b:IsA("BasePart") then
 							local pa, va = WorldToViewportPoint(Camera, a.Position)
 							local pb, vb = WorldToViewportPoint(Camera, b.Position)
 							if va and vb then
@@ -2366,6 +2516,7 @@ function addPlayer(player)
 									ln.From = Vector2.new(pa.X, pa.Y)
 									ln.To = Vector2.new(pb.X, pb.Y)
 									ln.Color = col
+									ln.Thickness = thick
 									ln.Visible = true
 								end
 							end
@@ -2395,7 +2546,7 @@ function addPlayer(player)
 					local markerPos = center + dir * (math.min(vp.X, vp.Y) / 2 - 40)
 					offscreenMarker.Size = Vector2.new(10, 10)
 					offscreenMarker.Position = Vector2.new(markerPos.X - 5, markerPos.Y - 5)
-					offscreenMarker.Color = Toggles.espNameUseTeamColor.Value and player.TeamColor.Color or Options.espNameColor1.Value
+					offscreenMarker.Color = flashCol or (Toggles.espNameUseTeamColor.Value and player.TeamColor.Color or Options.espNameColor1.Value)
 					offscreenMarker.Visible = true
 				else
 					offscreenMarker.Visible = false
@@ -2418,9 +2569,15 @@ function addPlayer(player)
 				chams.FillColor = Options.espHighlightColor1.Value
 				chams.OutlineColor = Options.espHighlightColor2.Value
 			end
+			if flashCol then chams.FillColor = flashCol; chams.OutlineColor = flashCol end
 			chams.DepthMode = Enum.HighlightDepthMode[Options.espHighlightDepthMode.Value]
 			chams.FillTransparency = Options.espHighlightFillTransparency.Value
-			chams.OutlineTransparency = Options.espHighlightOutlineTransparency.Value
+			if Toggles.espChamsGlow and Toggles.espChamsGlow.Value then
+				-- Glow pulse: oscillate the outline transparency over time.
+				chams.OutlineTransparency = 0.5 + 0.5 * math.abs(math.sin(tick() * 3))
+			else
+				chams.OutlineTransparency = Options.espHighlightOutlineTransparency.Value
+			end
 			chams.Enabled = true
 		else
 			chams.Enabled = false
@@ -2474,6 +2631,7 @@ function addPlayer(player)
 		defaultProperties = {}
 		currentSizes = {}
 		targetSizes = {}
+		appliedProps = {}
 		hookedParts = {}
 		if WaitForFullChar(character) then
 			playerIdx:Update()
@@ -3044,6 +3202,20 @@ pcall(function()
 			releaseClaim(); lastExtendedChar = nil; currentAppliedSize = nil
 			return
 		end
+		-- Respect the main script's "Disable While Seated" (shared via Toggles).
+		-- Honors radius mode: only stop if the target is within the seated radius.
+		if Toggles.seatDisableHBE and Toggles.seatDisableHBE.Value and isLocalSeated() then
+			local stop = true
+			if Toggles.seatRadiusMode and Toggles.seatRadiusMode.Value then
+				local c = selectedTarget and selectedTarget.Character
+				stop = c ~= nil and targetDistance(c) <= (Options.seatRadius and Options.seatRadius.Value or 30)
+			end
+			if stop then
+				if next(extendedParts) then restoreExtended() end
+				releaseClaim(); lastExtendedChar = nil; currentAppliedSize = nil
+				return
+			end
+		end
 		cam = Workspace.CurrentCamera
 		if Toggles.autoSelectTarget.Value then
 			selectedTarget = getClosestVisiblePlayer(Options.selectionRadius.Value)
@@ -3384,6 +3556,60 @@ pcall(function()
 		end)
 	end):AddToolTip("Teleport to the selected waypoint using the anti-detection method")
 
+	-- ===== Teleport to player =====
+	teleportGroup:AddDropdown("tpPlayerList", { Text = "Target Player", Values = {}, Multi = false, AllowNull = true, Tooltip = "Player to teleport to" })
+	local function refreshTpPlayers()
+		local names = {}
+		for _, p in ipairs(Players:GetPlayers()) do if p ~= lPlayer then table.insert(names, p.Name) end end
+		Options.tpPlayerList.Values = names
+		Options.tpPlayerList:SetValues()
+	end
+	local function getTargetPlayer()
+		local n = Options.tpPlayerList.Value
+		return n and Players:FindFirstChild(n) or nil
+	end
+	teleportGroup:AddButton("Refresh Players", function()
+		refreshTpPlayers(); Library:Notify("Player list refreshed")
+	end):AddToolTip("Re-list players for the dropdown")
+	teleportGroup:AddButton("Teleport to Player", function()
+		local p = getTargetPlayer()
+		local char = p and p.Character
+		local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+		if not root then Library:Notify("Target has no character"); return end
+		task.spawn(function()
+			local ok, err = pcall(teleportTo, root.Position + Vector3.new(0, 0, 3))
+			if not ok then Library:Notify("Teleport failed: " .. tostring(err)) end
+		end)
+	end):AddToolTip("Teleport right next to the selected player")
+	teleportGroup:AddButton("Teleport to Nearest Seat", function()
+		local p = getTargetPlayer()
+		local char = p and p.Character
+		local troot = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+		if not troot then Library:Notify("Target has no character"); return end
+		-- nearest EMPTY seat within 60 studs of the target (e.g. a free seat in their car)
+		local best, bestD = nil, math.huge
+		for _, s in ipairs(Workspace:GetDescendants()) do
+			if (s:IsA("VehicleSeat") or s:IsA("Seat")) and s.Occupant == nil then
+				local d = (s.Position - troot.Position).Magnitude
+				if d < bestD and d < 60 then bestD = d; best = s end
+			end
+		end
+		if not best then Library:Notify("No empty seat near that player"); return end
+		task.spawn(function()
+			pcall(function()
+				local c = lPlayer.Character
+				local hum = c and c:FindFirstChildWhichIsA("Humanoid")
+				local root = c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Torso"))
+				if root then root.CFrame = best.CFrame + Vector3.new(0, 2, 0) end
+				task.wait(0.12)
+				if hum and best.Occupant == nil then best:Sit(hum) end
+			end)
+		end)
+	end):AddToolTip("Teleport into the nearest empty seat next to the selected player (e.g. a seat in their car/heli)")
+	refreshTpPlayers()
+	Players.PlayerAdded:Connect(refreshTpPlayers)
+	Players.PlayerRemoving:Connect(function() task.wait(0.2); pcall(refreshTpPlayers) end)
+
 	Bridge:RegisterAddon("Teleport", {
 		onUnload = function()
 			for seat in pairs(activeTempSeats) do pcall(function() seat:Destroy() end) end
@@ -3414,7 +3640,7 @@ pcall(function()
 	-- 4 left + 4 right groupboxes, all under the single Miscellaneous tab.
 	local speedGroup     = miscTab:AddLeftGroupbox("Vehicle: Speed")
 	local detectGroup    = miscTab:AddLeftGroupbox("Vehicle: Detection")
-	local stabilGroup    = miscTab:AddLeftGroupbox("Vehicle: Stabilizer")
+	local stabilGroup    = miscTab:AddLeftGroupbox("Vehicle: Limiter")
 	local expanderGroup  = miscTab:AddLeftGroupbox("Combat: Tool Expander")
 	local infoGroup      = miscTab:AddRightGroupbox("Vehicle: Info")
 	local weaponListGroup= miscTab:AddRightGroupbox("Combat: Weapon List")
@@ -3422,40 +3648,41 @@ pcall(function()
 	local settingsGroupC = miscTab:AddRightGroupbox("Combat: Settings")
 
 	-- Forward declarations: buttons below are created before these are defined.
-	local applyVehicleSpeed, refreshVehicleDetection, applyToolExpansion
+	local refreshVehicleDetection, applyToolExpansion
 
 	-- Manual vehicle pick (fallback if auto seat-detection fails).
 	local manualVehicle = nil
 
 	-- ===== Vehicle UI =====
-	speedGroup:AddToggle("vehicleSpeedEnabled", { Text = "Enable Speed Boost", Default = false, Tooltip = "Master switch for vehicle speed modification" })
-	speedGroup:AddSlider("speedMultiplier", { Text = "Speed Multiplier", Min = 1, Max = 10, Default = 2, Rounding = 1, Tooltip = "Factor to multiply vehicle velocity" })
-	speedGroup:AddButton("Apply Speed", function()
-		if Toggles.vehicleSpeedEnabled.Value and applyVehicleSpeed then pcall(applyVehicleSpeed) end
-	end):AddToolTip("Force-apply the speed multiplier to your current vehicle")
+	speedGroup:AddToggle("vehicleAssist", { Text = "Vehicle Assist", Default = false, Tooltip = "Master toggle. Auto-stabilizes the vehicle (firmer at higher speed) and enables the speed jolt + limiter. (Default: OFF)" })
+	speedGroup:AddLabel("Speed Jolt Key"):AddKeyPicker("vehicleJoltKey", { Default = "G", NoUI = true, Text = "Speed Jolt" })
+	speedGroup:AddSlider("vehicleJoltPower", { Text = "Jolt Power", Min = 10, Max = 500, Default = 120, Rounding = 1, Tooltip = "Burst of speed added each key press, in studs/sec. (Default: 120)" })
 
 	detectGroup:AddDropdown("vehicleDetectionMode", { Text = "Detection Mode", Values = { "Auto", "A-Chassis", "Basic Seat", "Custom Script" }, Default = "Auto", Multi = false, AllowNull = false, Tooltip = "Hint for how to detect the vehicle (Auto works for most)" })
 	detectGroup:AddButton("Refresh Detection", function()
 		if refreshVehicleDetection then pcall(refreshVehicleDetection) end
 	end):AddToolTip("Rescan your character for the seat/vehicle you're in")
 	detectGroup:AddToggle("vehicleManualMode", { Text = "Manual Vehicle", Default = false, Tooltip = "Ignore auto seat-detection and use the vehicle you pick below (use this if auto fails)" })
-	detectGroup:AddButton("Pick Vehicle From Cursor", function()
-		local part = pickUnderCursor()
-		if not part then Library:Notify("Nothing under cursor"); return end
-		manualVehicle = part
-		if not Toggles.vehicleManualMode.Value then Toggles.vehicleManualMode:SetValue(true) end
-		if refreshVehicleDetection then pcall(refreshVehicleDetection) end
-		local model = part:FindFirstAncestorWhichIsA("Model")
-		Library:Notify("Manual vehicle: " .. (model and model.Name or part.Name))
-	end):AddToolTip("Aim at a car/vehicle and click -- selects it manually so Speed/Stabilizer still work")
+	detectGroup:AddButton("Pick Vehicle (hold-click)", function()
+		Bridge:StartHoldPick({
+			color = Color3.fromRGB(0, 170, 255),
+			onPick = function(part)
+				manualVehicle = part
+				if not Toggles.vehicleManualMode.Value then Toggles.vehicleManualMode:SetValue(true) end
+				if refreshVehicleDetection then pcall(refreshVehicleDetection) end
+				local model = part:FindFirstAncestorWhichIsA("Model")
+				Library:Notify("Manual vehicle: " .. (model and model.Name or part.Name))
+			end,
+		})
+	end):AddToolTip("Aim at a vehicle and HOLD left-click until the ring fills to select it (right-click cancels)")
 	detectGroup:AddButton("Clear Manual Vehicle", function()
 		manualVehicle = nil
 		if refreshVehicleDetection then pcall(refreshVehicleDetection) end
 		Library:Notify("Manual vehicle cleared")
 	end):AddToolTip("Forget the manually picked vehicle")
 
-	stabilGroup:AddToggle("stabilizerEnabled", { Text = "Enable Stabilizer", Default = false, Tooltip = "Keep the vehicle upright at speed" })
-	stabilGroup:AddSlider("stabilizerStrength", { Text = "Stabilizer Force", Min = 100, Max = 5000, Default = 1000, Rounding = 1, Tooltip = "Angular force used to keep the vehicle upright" })
+	stabilGroup:AddToggle("vehicleSpeedLimiter", { Text = "Speed Limiter", Default = false, Tooltip = "ON = caps your speed at the limit below even if you keep jolting. OFF = jolts uncapped (hit the jets). (Default: OFF)" })
+	stabilGroup:AddSlider("vehicleSpeedCap", { Text = "Speed Limit (studs/s)", Min = 20, Max = 500, Default = 120, Rounding = 1, Tooltip = "Max horizontal speed while the limiter is on. (Default: 120)" })
 
 	local vehicleInfoLabel = infoGroup:AddLabel("Current Vehicle: None")
 
@@ -3486,13 +3713,13 @@ pcall(function()
 		if applyToolExpansion then pcall(applyToolExpansion) end
 	end):AddToolTip("Force-apply expansion to the currently equipped tool(s)")
 
-	-- ===== Vehicle logic =====
+	-- ===== Vehicle logic (combined assist: jolt + limiter + auto-stabilizer) =====
 	local currentVehicle, vehicleType
-	local speedConnection, stabilizerConnection
+	local assistConn = nil
 
 	local function detectVehicle()
-		-- Manual override: if Manual Vehicle is on, use the part you picked so the
-		-- speed/stabilizer still work when auto seat-detection fails.
+		-- Manual override: if Manual Vehicle is on, use the part you picked so assist
+		-- still works when auto seat-detection fails.
 		if Toggles.vehicleManualMode and Toggles.vehicleManualMode.Value then
 			if manualVehicle and manualVehicle.Parent then return manualVehicle end
 			return nil
@@ -3518,76 +3745,91 @@ pcall(function()
 		return root, primary
 	end
 
-	applyVehicleSpeed = function()
-		local _, primary = vehicleRootAndPrimary()
-		if not primary then return end
-		local mult = Options.speedMultiplier.Value
-		local bodyVel = primary:FindFirstChild("FurryHBE_BodyVel")
-		if not bodyVel then
-			bodyVel = Instance.new("BodyVelocity")
-			bodyVel.Name = "FurryHBE_BodyVel"
-			bodyVel.MaxForce = Vector3.new(400000, 0, 400000)
-			bodyVel.Parent = primary
+	-- Track the part we last attached a gyro to so we can clean it up the moment we
+	-- leave/switch vehicles (audit fix: an empty car was being left stabilized).
+	local activePrimary = nil
+	local function clearGyro()
+		if activePrimary then
+			pcall(function()
+				local g = activePrimary:FindFirstChild("FurryHBE_StabGyro")
+				if g then g:Destroy() end
+			end)
+			activePrimary = nil
 		end
-		local speed = primary.AssemblyLinearVelocity.Magnitude
-		bodyVel.Velocity = primary.CFrame.LookVector * math.clamp(speed * mult, 0, 5000)
+	end
+	local function removeVehiclePhysics() clearGyro() end
+
+	-- Always re-validate which vehicle we're actually in; if it changed or we got
+	-- out, drop the old gyro first.
+	local function ensureVehicle()
+		currentVehicle = detectVehicle()
+		local root, primary = vehicleRootAndPrimary()
+		if primary ~= activePrimary then clearGyro(); activePrimary = primary end
+		return root, primary
 	end
 
-	local function stabilizerLoop()
-		if not Toggles.stabilizerEnabled.Value then return end
-		local _, primary = vehicleRootAndPrimary()
+	-- One Heartbeat: auto-stabilize (torque scales with speed) + enforce the limiter.
+	local function assistStep()
+		if not Toggles.vehicleAssist.Value then clearGyro(); return end
+		local _, primary = ensureVehicle()
 		if not primary then return end
+		local vel = primary.AssemblyLinearVelocity
+		local speed = vel.Magnitude
+
+		-- Auto-stabilizer: keep upright, torque/responsiveness scaled to speed so it
+		-- self-adjusts no matter how fast you go. Roll+pitch only (yaw stays free) so
+		-- steering isn't fought.
 		local gyro = primary:FindFirstChild("FurryHBE_StabGyro")
 		if not gyro then
 			gyro = Instance.new("BodyGyro")
 			gyro.Name = "FurryHBE_StabGyro"
-			gyro.P = 3000
+			gyro.D = 500
 			gyro.Parent = primary
 		end
-		local force = Options.stabilizerStrength.Value or 1000
-		gyro.MaxTorque = Vector3.new(force, force, force)
+		gyro.P = math.clamp(speed * 200, 2000, 30000)
+		local strength = math.clamp(800 + speed * 40, 800, 60000)
+		gyro.MaxTorque = Vector3.new(strength, 0, strength)
 		local _, yaw = primary.CFrame:ToEulerAnglesYXZ()
 		gyro.CFrame = CFrame.new(primary.Position) * CFrame.Angles(0, yaw, 0)
+
+		-- Speed limiter: clamp horizontal speed to the cap when enabled.
+		if Toggles.vehicleSpeedLimiter.Value then
+			local cap = Options.vehicleSpeedCap.Value
+			local horiz = Vector3.new(vel.X, 0, vel.Z)
+			if horiz.Magnitude > cap then
+				local capped = horiz.Unit * cap
+				primary.AssemblyLinearVelocity = Vector3.new(capped.X, vel.Y, capped.Z)
+			end
+		end
 	end
 
-	local function removeVehiclePhysics()
-		local _, primary = vehicleRootAndPrimary()
-		if primary then
-			local bv = primary:FindFirstChild("FurryHBE_BodyVel"); if bv then bv:Destroy() end
-			local g  = primary:FindFirstChild("FurryHBE_StabGyro"); if g then g:Destroy() end
-		end
+	-- Speed jolt: an impulse via AssemblyLinearVelocity (no persistent BodyVelocity),
+	-- so wheel physics on advanced chassis aren't fought/broken (the old tire bug).
+	-- The limiter clamps it next frame; with the limiter off it's a full "jet".
+	local function speedJolt()
+		if not Toggles.vehicleAssist.Value then return end
+		local _, primary = ensureVehicle()
+		if not primary then return end
+		local newVel = primary.AssemblyLinearVelocity + primary.CFrame.LookVector * Options.vehicleJoltPower.Value
+		-- Anti-fling: a single jolt can never produce an absurd velocity.
+		if newVel.Magnitude > 2000 then newVel = newVel.Unit * 2000 end
+		primary.AssemblyLinearVelocity = newVel
 	end
 
 	refreshVehicleDetection = function()
 		currentVehicle = detectVehicle()
 		vehicleInfoLabel:SetText("Current Vehicle: " .. (currentVehicle and identifyVehicleType(currentVehicle) or "None"))
-		if speedConnection then speedConnection:Disconnect(); speedConnection = nil end
-		if stabilizerConnection then stabilizerConnection:Disconnect(); stabilizerConnection = nil end
-		if Toggles.vehicleSpeedEnabled.Value then
-			speedConnection = RunService.Heartbeat:Connect(function()
-				if Toggles.vehicleSpeedEnabled.Value and currentVehicle then pcall(applyVehicleSpeed) end
-			end)
-		end
-		if Toggles.stabilizerEnabled.Value then
-			stabilizerConnection = RunService.Heartbeat:Connect(function() pcall(stabilizerLoop) end)
-		end
 	end
 
-	Toggles.vehicleSpeedEnabled:OnChanged(function()
-		if Toggles.vehicleSpeedEnabled.Value then
+	Options.vehicleJoltKey:OnClick(function() pcall(speedJolt) end)
+
+	Toggles.vehicleAssist:OnChanged(function()
+		if Toggles.vehicleAssist.Value then
 			refreshVehicleDetection()
+			if not assistConn then assistConn = RunService.Heartbeat:Connect(function() pcall(assistStep) end) end
 		else
-			if speedConnection then speedConnection:Disconnect(); speedConnection = nil end
+			if assistConn then assistConn:Disconnect(); assistConn = nil end
 			removeVehiclePhysics()
-		end
-	end)
-	Toggles.stabilizerEnabled:OnChanged(function()
-		if Toggles.stabilizerEnabled.Value then
-			refreshVehicleDetection()
-		else
-			if stabilizerConnection then stabilizerConnection:Disconnect(); stabilizerConnection = nil end
-			local _, primary = vehicleRootAndPrimary()
-			if primary then local g = primary:FindFirstChild("FurryHBE_StabGyro"); if g then g:Destroy() end end
 		end
 	end)
 
@@ -3669,8 +3911,7 @@ pcall(function()
 	Bridge:RegisterAddon("Misc", {
 		onUnload = function()
 			for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
-			if speedConnection then pcall(function() speedConnection:Disconnect() end) end
-			if stabilizerConnection then pcall(function() stabilizerConnection:Disconnect() end) end
+			if assistConn then pcall(function() assistConn:Disconnect() end) end
 			pcall(removeVehiclePhysics)
 			for tool, saved in pairs(originalToolSizes) do
 				for part, origSize in pairs(saved) do
@@ -3690,7 +3931,7 @@ end)
 -- size once, so it never corrupts the original and restores cleanly).
 pcall(function()
 	local lPlayer = Players.LocalPlayer
-	local mvGroup = mainTab:AddRightGroupbox("Manual Vehicle HBE")
+	local mvGroup = (Bridge.MiscTab or mainTab):AddRightGroupbox("Manual Vehicle HBE")
 	mvGroup:AddToggle("mvHbeEnabled", { Text = "Enable Manual Vehicle HBE", Default = false, Tooltip = "Extend the hitbox of a vehicle/part you pick manually (independent of every other extender)" })
 	mvGroup:AddSlider("mvHbeSize", { Text = "Added Size (studs)", Min = 1, Max = 250, Default = 20, Rounding = 1, Tooltip = "Studs added to the picked part's size" })
 	mvGroup:AddSlider("mvHbeTransparency", { Text = "Transparency", Min = 0, Max = 1, Default = 0.6, Rounding = 2 })
@@ -3700,17 +3941,6 @@ pcall(function()
 
 	local pickedPart = nil
 	local extended = {}     -- [BasePart] = { Size, Transparency, CanCollide }
-
-	local function pickUnderCursor()
-		local cam = Workspace.CurrentCamera
-		local mouse = lPlayer:GetMouse()
-		local ray = cam:ViewportPointToRay(mouse.X, mouse.Y)
-		local params = RaycastParams.new()
-		params.FilterType = Enum.RaycastFilterType.Exclude
-		params.FilterDescendantsInstances = { lPlayer.Character }
-		local res = Workspace:Raycast(ray.Origin, ray.Direction * 2000, params)
-		return res and res.Instance or nil
-	end
 
 	local function restore()
 		for part, orig in pairs(extended) do
@@ -3761,15 +3991,18 @@ pcall(function()
 		end
 	end
 
-	mvGroup:AddButton("Pick Vehicle Under Cursor", function()
-		local part = pickUnderCursor()
-		if not part then Library:Notify("Nothing under cursor"); return end
-		restore()                       -- drop the previous pick cleanly first
-		pickedPart = part
-		local model = part:FindFirstAncestorWhichIsA("Model")
-		mvInfo:SetText("Picked: " .. (model and model.Name or part.Name))
-		Library:Notify("Picked vehicle: " .. (model and model.Name or part.Name))
-	end):AddToolTip("Aim at a car/vehicle/part and click to select it for hitbox extension")
+	mvGroup:AddButton("Pick Vehicle (hold-click)", function()
+		Bridge:StartHoldPick({
+			color = Color3.fromRGB(255, 170, 0),
+			onPick = function(part)
+				restore()                   -- drop the previous pick cleanly first
+				pickedPart = part
+				local model = part:FindFirstAncestorWhichIsA("Model")
+				mvInfo:SetText("Picked: " .. (model and model.Name or part.Name))
+				Library:Notify("Picked vehicle: " .. (model and model.Name or part.Name))
+			end,
+		})
+	end):AddToolTip("Aim at a vehicle and HOLD left-click until the ring fills to select it (right-click cancels)")
 
 	mvGroup:AddButton("Clear Pick", function()
 		restore()
@@ -3795,7 +4028,297 @@ pcall(function()
 			pcall(restore)
 		end,
 	})
-	print("[ManualVehicleHBE] Loaded on Main tab.")
+	print("[ManualVehicleHBE] Loaded on Miscellaneous tab.")
+end)
+
+-- ----- Vehicle ESP (Miscellaneous tab) --------------------------------------
+pcall(function()
+	local miscTab = Bridge.MiscTab
+	if not miscTab then return end
+	local lPlayer = Players.LocalPlayer
+	local HttpService = game:GetService("HttpService")
+	local VE_FILE = "FurryHBE_VehicleTypes.json"
+	local TYPE_COLOR = {
+		Car = Color3.fromRGB(255, 255, 255), Helicopter = Color3.fromRGB(0, 255, 255),
+		Boat = Color3.fromRGB(80, 160, 255), Plane = Color3.fromRGB(255, 230, 60),
+	}
+
+	local g = miscTab:AddLeftGroupbox("Vehicle ESP")
+	g:AddToggle("vehicleEspEnabled", { Text = "Enable Vehicle ESP", Default = false, Tooltip = "Draw name + type + distance on registered vehicles. (Default: OFF)" })
+	g:AddDropdown("vehicleEspList", { Text = "Registered Vehicles", Values = {}, Multi = false, AllowNull = true, Tooltip = "Vehicles currently tracked" })
+	g:AddDropdown("vehicleEspType", { Text = "Mark As", Values = { "Car", "Helicopter", "Boat", "Plane" }, Default = "Car", Multi = false, AllowNull = false, Tooltip = "Type to tag the selected vehicle with (saved to disk)" })
+
+	local registered = {}     -- { { model=, name=, type= }, ... }
+	local vehicleTypes = {}   -- [name] = type (persisted)
+	pcall(function()
+		if isfile and readfile and isfile(VE_FILE) then
+			local ok, t = pcall(function() return HttpService:JSONDecode(readfile(VE_FILE)) end)
+			if ok and type(t) == "table" then vehicleTypes = t end
+		end
+	end)
+	local function saveTypes() if writefile then pcall(function() writefile(VE_FILE, HttpService:JSONEncode(vehicleTypes)) end) end end
+	local function refreshList()
+		local names = {}
+		for _, e in ipairs(registered) do table.insert(names, e.name) end
+		Options.vehicleEspList.Values = names
+		Options.vehicleEspList:SetValues()
+	end
+	local function isRegistered(m) for _, e in ipairs(registered) do if e.model == m then return true end end return false end
+	local function registerModel(m)
+		if not m or not m:IsA("Model") or isRegistered(m) then return end
+		table.insert(registered, { model = m, name = m.Name, type = vehicleTypes[m.Name] or "Car" })
+		refreshList()
+	end
+
+	g:AddButton("Scan Vehicles", function()
+		local count = 0
+		for _, d in ipairs(Workspace:GetDescendants()) do
+			if d:IsA("VehicleSeat") then
+				local m = d:FindFirstAncestorWhichIsA("Model")
+				if m and not isRegistered(m) then registerModel(m); count = count + 1 end
+			end
+		end
+		Library:Notify("Vehicle ESP: registered " .. count .. " vehicle(s)")
+	end):AddToolTip("Find models that contain a VehicleSeat and register them")
+	g:AddButton("Register (hold-pick)", function()
+		Bridge:StartHoldPick({ color = Color3.fromRGB(0, 255, 170), onPick = function(part)
+			local m = part:FindFirstAncestorWhichIsA("Model") or part
+			registerModel(m); Library:Notify("Registered vehicle: " .. m.Name)
+		end })
+	end):AddToolTip("Aim at a vehicle and hold-click to register it")
+	g:AddButton("Set Type to Selected", function()
+		local sel = Options.vehicleEspList.Value
+		if not sel then return end
+		for _, e in ipairs(registered) do
+			if e.name == sel then e.type = Options.vehicleEspType.Value; vehicleTypes[e.name] = e.type end
+		end
+		saveTypes(); Library:Notify(sel .. " -> " .. Options.vehicleEspType.Value)
+	end):AddToolTip("Tag the selected vehicle as Car/Helicopter/Boat/Plane (saved)")
+	g:AddButton("Remove Selected", function()
+		local sel = Options.vehicleEspList.Value
+		for i = #registered, 1, -1 do if registered[i].name == sel then table.remove(registered, i) end end
+		refreshList()
+	end)
+	g:AddButton("Clear All", function() registered = {}; refreshList() end)
+
+	local pool = {}
+	local function getText(i)
+		if not pool[i] then
+			local t = DrawingFallback.new("Text")
+			t.Center = true; t.Outline = true; t.Size = 14
+			pool[i] = t
+		end
+		return pool[i]
+	end
+	local function hideFrom(i) for j = i, #pool do pool[j].Visible = false end end
+
+	RunService:BindToRenderStep("FurryHBE_VehicleESP", Enum.RenderPriority.Camera.Value, function()
+		if not Toggles.vehicleEspEnabled.Value then hideFrom(1); return end
+		local cam = Workspace.CurrentCamera
+		local lchar = lPlayer.Character
+		local lroot = lchar and (lchar:FindFirstChild("HumanoidRootPart") or lchar:FindFirstChild("Head"))
+		local idx = 0
+		for _, e in ipairs(registered) do
+			local m = e.model
+			if typeof(m) == "Instance" and m.Parent then
+				local okp, cf = pcall(function() return m:GetPivot() end)
+				if okp and cf then
+					local sp, on = cam:WorldToViewportPoint(cf.Position)
+					if on then
+						idx = idx + 1
+						local t = getText(idx)
+						local dist = lroot and math.floor((cf.Position - lroot.Position).Magnitude) or 0
+						local driver = ""
+						pcall(function()
+							local seat = m:FindFirstChildWhichIsA("VehicleSeat", true)
+							if seat and seat.Occupant then
+								local p = Players:GetPlayerFromCharacter(seat.Occupant.Parent)
+								driver = p and (" <" .. p.Name .. ">") or " <occupied>"
+							end
+						end)
+						t.Text = e.name .. " [" .. e.type .. "] " .. dist .. "m" .. driver
+						t.Position = Vector2.new(sp.X, sp.Y)
+						t.Color = TYPE_COLOR[e.type] or Color3.fromRGB(255, 255, 255)
+						t.Visible = true
+					end
+				end
+			end
+		end
+		hideFrom(idx + 1)
+	end)
+
+	Bridge:RegisterAddon("VehicleESP", { onUnload = function()
+		pcall(function() RunService:UnbindFromRenderStep("FurryHBE_VehicleESP") end)
+		for _, t in ipairs(pool) do pcall(function() t:Remove() end) end
+	end })
+	print("[VehicleESP] Loaded.")
+end)
+
+-- ----- Inf Ammo + Gun Picker (Miscellaneous tab) ----------------------------
+pcall(function()
+	local miscTab = Bridge.MiscTab
+	if not miscTab then return end
+	local lPlayer = Players.LocalPlayer
+	local AMMO_PAT = { "ammo", "bullet", "mag", "clip", "round", "reserve", "shell" }
+
+	local g = miscTab:AddRightGroupbox("Inf Ammo / Guns")
+	g:AddToggle("infAmmoEnabled", { Text = "Enable Inf Ammo", Default = false, Tooltip = "Continuously refills numeric ammo values on your equipped gun(s).\nClient-side heuristic; some games keep ammo server-side. (Default: OFF)" })
+	g:AddToggle("infAmmoAllTools", { Text = "Apply to Any Tool", Default = false, Tooltip = "Apply to every equipped tool, not just registered guns. (Default: OFF)" })
+	g:AddSlider("infAmmoAmount", { Text = "Refill Amount", Min = 1, Max = 9999, Default = 999, Rounding = 0, Tooltip = "Value ammo fields are refilled to each tick. (Default: 999)" })
+	g:AddDropdown("infAmmoGuns", { Text = "Registered Guns", Values = {}, Multi = true, AllowNull = true, Tooltip = "Guns this applies to (unless 'Apply to Any Tool')" })
+
+	local function addGun(name)
+		if not name or name == "" then return end
+		local list = Options.infAmmoGuns
+		if not table.find(list.Values, name) then table.insert(list.Values, name); list:SetValues() end
+		local v = list.Value
+		if type(v) == "table" then v[name] = true; pcall(function() list:SetValue(v) end) end
+		Library:Notify("Registered gun: " .. name)
+	end
+	g:AddButton("Register Gun in Hand", function()
+		local char = lPlayer.Character
+		local tool = char and char:FindFirstChildWhichIsA("Tool")
+		if tool then addGun(tool.Name) else Library:Notify("No tool equipped") end
+	end):AddToolTip("Register the tool you're currently holding")
+	g:AddButton("Register Gun (hold-pick)", function()
+		Bridge:StartHoldPick({ color = Color3.fromRGB(255, 120, 0), onPick = function(part)
+			local tool = part:FindFirstAncestorWhichIsA("Tool")
+			if tool then addGun(tool.Name) else Library:Notify("That isn't part of a Tool") end
+		end })
+	end):AddToolTip("Aim at a gun/tool and hold-click to register it")
+	g:AddButton("Clear Guns", function()
+		Options.infAmmoGuns.Values = {}; Options.infAmmoGuns:SetValues(); pcall(function() Options.infAmmoGuns:SetValue({}) end)
+	end)
+
+	local function isAmmoName(n)
+		n = n:lower()
+		for _, p in ipairs(AMMO_PAT) do if n:find(p) then return true end end
+		return false
+	end
+	local detLabel = g:AddLabel("Detection: idle", true)
+
+	-- ===== Adaptive ammo resolver =====================================
+	-- Like the attach flow: try each detection STRATEGY in order and fall through
+	-- until one actually finds ammo; cache the winner per gun. If every static
+	-- strategy fails, a LEARNING detector watches the gun's numbers and adopts any
+	-- value that drops when you fire. So even oddly-built guns get covered.
+	local fieldCache = setmetatable({}, { __mode = "k" })  -- [tool] = { fields=, how= }
+	local snapshots  = setmetatable({}, { __mode = "k" })  -- [tool] = { [valueObj] = lastValue }
+
+	local function fieldFromValue(v)
+		return { read = function() return v.Value end, write = function(n) pcall(function() v.Value = n end) end }
+	end
+	local function fieldFromAttr(inst, name)
+		return { read = function() return inst:GetAttribute(name) or 0 end, write = function(n) pcall(function() inst:SetAttribute(name, n) end) end }
+	end
+
+	local function stratValueNames(tool)
+		local out = {}
+		for _, d in ipairs(tool:GetDescendants()) do
+			if (d:IsA("IntValue") or d:IsA("NumberValue")) and isAmmoName(d.Name) then out[#out + 1] = fieldFromValue(d) end
+		end
+		return out
+	end
+	local function stratAttributes(tool)
+		local out = {}
+		local function scan(inst) for an, av in pairs(inst:GetAttributes()) do if type(av) == "number" and isAmmoName(an) then out[#out + 1] = fieldFromAttr(inst, an) end end end
+		pcall(scan, tool)
+		for _, d in ipairs(tool:GetDescendants()) do pcall(scan, d) end
+		return out
+	end
+	local function stratConfiguration(tool)
+		local out = {}
+		for _, d in ipairs(tool:GetDescendants()) do
+			if d:IsA("Configuration") or (typeof(d.Name) == "string" and d.Name:lower():find("config")) then
+				for _, c in ipairs(d:GetChildren()) do
+					if c:IsA("IntValue") or c:IsA("NumberValue") then out[#out + 1] = fieldFromValue(c) end
+				end
+			end
+		end
+		return out
+	end
+	local function stratPlayerSide(_)
+		local out = {}
+		for _, d in ipairs(lPlayer:GetDescendants()) do
+			if (d:IsA("IntValue") or d:IsA("NumberValue")) and isAmmoName(d.Name) then out[#out + 1] = fieldFromValue(d) end
+		end
+		return out
+	end
+	local STRATS = {
+		{ name = "ValueNames", fn = stratValueNames },
+		{ name = "Attributes", fn = stratAttributes },
+		{ name = "Configuration", fn = stratConfiguration },
+		{ name = "PlayerSide", fn = stratPlayerSide },
+	}
+
+	local function stratLearning(tool)
+		local snap = snapshots[tool]
+		if not snap then
+			snap = {}
+			for _, d in ipairs(tool:GetDescendants()) do
+				if d:IsA("IntValue") or d:IsA("NumberValue") then snap[d] = d.Value end
+			end
+			snapshots[tool] = snap
+			return {}
+		end
+		local out = {}
+		for v, last in pairs(snap) do
+			if typeof(v) == "Instance" and v.Parent then
+				if v.Value < last then out[#out + 1] = fieldFromValue(v) end  -- decreased = ammo
+				snap[v] = v.Value
+			else
+				snap[v] = nil
+			end
+		end
+		return out
+	end
+
+	local function resolveFields(tool)
+		local cached = fieldCache[tool]
+		if cached and #cached.fields > 0 then return cached end
+		for _, s in ipairs(STRATS) do
+			local fields = s.fn(tool)
+			if #fields > 0 then fieldCache[tool] = { fields = fields, how = s.name }; return fieldCache[tool] end
+		end
+		local learned = stratLearning(tool)
+		if #learned > 0 then fieldCache[tool] = { fields = learned, how = "Learned" }; return fieldCache[tool] end
+		return nil
+	end
+
+	local lastHow = nil
+	local function refillTool(tool)
+		local res = resolveFields(tool)
+		if not res then return end
+		local amt = Options.infAmmoAmount.Value
+		for _, f in ipairs(res.fields) do
+			local cur = f.read()
+			if type(cur) == "number" and cur < amt then f.write(amt) end
+		end
+		if res.how ~= lastHow then
+			lastHow = res.how
+			pcall(function() detLabel:SetText("Detection: " .. res.how) end)
+		end
+	end
+
+	local lastRefill = 0
+	local ammoConn = RunService.Heartbeat:Connect(function()
+		if not Toggles.infAmmoEnabled.Value then return end
+		local now = tick()
+		if now - lastRefill < 0.15 then return end  -- light throttle
+		lastRefill = now
+		local char = lPlayer.Character
+		if not char then return end
+		local active = Options.infAmmoGuns:GetActiveValues()
+		for _, tool in ipairs(char:GetChildren()) do
+			if tool:IsA("Tool") and (Toggles.infAmmoAllTools.Value or table.find(active, tool.Name)) then
+				pcall(refillTool, tool)
+			end
+		end
+	end)
+	Bridge:RegisterAddon("InfAmmo", { onUnload = function()
+		if ammoConn then pcall(function() ammoConn:Disconnect() end) end
+	end })
+	print("[InfAmmo] Loaded.")
 end)
 
 -- ----- Version / Changelog tab + live status light --------------------------
@@ -3814,6 +4337,13 @@ pcall(function()
 		"Integrated every module into this single file, renamed the UI and added this Version/Changelog tab. Everything now ships in one script. A live status light reports core health at a glance.",
 		"Added the Vehicle + Combat (Tool Expander) module into the Miscellaneous tab. Vehicle speed and stabilizer detect your seat and apply physics; the Tool Expander scales equipped tool hitboxes. The original file's forward-reference, SetLabel and seat-detection bugs were all fixed.",
 		"Added manual vehicle picking. The Miscellaneous tab can now select a vehicle by aiming and clicking when auto-detection fails, so Speed/Stabilizer still work. The Main tab also gained a separate Manual Vehicle HBE that extends the hitbox of any vehicle you pick.",
+		"Priority players now rainbow-flash across all ESP (name, box, tracer, skeleton, chams, off-screen marker). Manual Vehicle HBE moved to the Miscellaneous tab, the vehicle pickers use the hold-ring, and the status light got a working hover tooltip. Emergency and Console were folded into a single Settings tab to declutter the tab bar.",
+		"Stability pass: fixed the recurring 'Position is not a valid member of Model' ESP error (accessory models like TorsoStrap were matched as body parts), throttled/capped error logging to stop the freeze and Clear-Errors glitch, and wrapped console + tooltip text so nothing clips off-screen. Disable-While-Seated now defaults on to stop the in-car freeze. Whitelists auto-save to disk and restore every execute, whitelisted players can keep ESP, and ESP names support Display/Account/Both.",
+		"Feature batch: Outline-Only HBE (wireframe instead of a solid block, with colour + transparency). Vehicle Assist replaces the old speed/stabilizer -- a keybind speed jolt, a speed limiter, and an auto-stabilizer that scales with speed (impulse-based to stop the tire glitch). Teleport-to-player plus teleport-into-the-nearest-seat. Vehicle ESP with a registered list and Car/Heli/Boat/Plane tagging. Inf-ammo with an in-hand / hold-pick gun picker. ESP is now fully independent of the HBE filters so it never flickers off.",
+		"Resilience pass: added an adaptive self-heal watchdog that reconciles the player list every few seconds (auto-recovers missed joins/respawns, prunes leavers), self-refreshing character references so ESP/HBE never go dark on a stale character, BasePart guards on the skeleton, Vehicle Assist now releases its gyro the instant you exit/switch vehicles, and duplicate player-list entries are prevented. Everything stays pcall-isolated so an error degrades to partial function, never a freeze.",
+		"Improvements batch 1: per-game settings profiles (auto-save/load by PlaceId), a master PANIC/Reset-All button, global Rainbow ESP with a speed slider, animated chams Glow Pulse, a vehicle anti-fling clamp on the speed jolt, and an on-screen watermark showing tracked-player count and error status. Each was added as an isolated module so it can't affect the core.",
+		"Improvements batch 2: Smart Jitter (smooth sine size-variation) and a Max-Plausible cap for safer extension, ESP line-thickness + distance-fade, Vehicle ESP now shows the driver/occupant name, and the per-game profile now persists every add-on's settings too (unified persistence). Remaining draft items (aim-resolver modes, dropdown search, blurred/animated UI) are game/fork-specific and intentionally left for dedicated passes.",
+		"Adaptive Inf-Ammo resolver: it now tries detection strategies in order (named values, attributes, Configuration folders, player-side values) and falls through until one finds the ammo, caching the winner per gun. If all fail, a learning detector watches the gun and adopts any number that drops when you fire. A label shows which method detected.",
 	}
 	local function verNum(i) return 1 + 0.5 * (i - 1) end
 	local function fmtV(n) return "V" .. (n == math.floor(n) and tostring(math.floor(n)) or tostring(n)) end
@@ -3840,9 +4370,6 @@ pcall(function()
 
 	local versionLabel = statusGroup:AddLabel("cryptonize's library  " .. currentVersion)
 	local statusLabel  = statusGroup:AddLabel("Status: checking...")
-	-- Hover legend (best-effort -- not every LinoriaLib fork tooltips labels).
-	pcall(function() statusLabel:AddToolTip(LEGEND) end)
-	pcall(function() versionLabel:AddToolTip(LEGEND) end)
 
 	-- Best-effort colour of a LinoriaLib label's underlying TextLabel.
 	local function tintLabel(lbl, color)
@@ -3882,8 +4409,8 @@ pcall(function()
 	end
 	refreshStatus()
 
-	-- Stronger hover legend: bind via Library:AddToolTip on the real TextLabel,
-	-- which works even on forks where label:AddToolTip doesn't exist.
+	-- Self-contained hover tooltip (reliable across LinoriaLib forks): bind
+	-- MouseEnter/Leave on the real TextLabels and draw our own follow-the-mouse box.
 	local function labelInstance(lbl)
 		local inst = rawget(lbl, "TextLabel") or rawget(lbl, "Label") or rawget(lbl, "Instance")
 		if typeof(inst) == "Instance" and inst:IsA("TextLabel") then return inst end
@@ -3895,16 +4422,51 @@ pcall(function()
 			end
 		end
 	end
-	pcall(function() local i = labelInstance(statusLabel);  if i then Library:AddToolTip(LEGEND, i) end end)
-	pcall(function() local i = labelInstance(versionLabel); if i then Library:AddToolTip(LEGEND, i) end end)
+	pcall(function()
+		local tipGui = Instance.new("ScreenGui")
+		tipGui.Name = "FurryHBE_StatusTip"; tipGui.ResetOnSpawn = false
+		tipGui.DisplayOrder = 999999; tipGui.IgnoreGuiInset = true
+		tipGui.Parent = game:GetService("CoreGui")
+		local tip = Instance.new("TextLabel")
+		tip.AutomaticSize = Enum.AutomaticSize.Y
+		tip.Size = UDim2.fromOffset(320, 0)
+		tip.BackgroundColor3 = Color3.fromRGB(20, 20, 20); tip.BackgroundTransparency = 0.05
+		tip.TextColor3 = Color3.fromRGB(235, 235, 235); tip.TextSize = 13
+		tip.Font = Enum.Font.SourceSans; tip.TextWrapped = true
+		tip.TextXAlignment = Enum.TextXAlignment.Left; tip.TextYAlignment = Enum.TextYAlignment.Top
+		tip.Text = LEGEND; tip.Visible = false; tip.ZIndex = 999999; tip.Parent = tipGui
+		local pad = Instance.new("UIPadding", tip)
+		pad.PaddingLeft = UDim.new(0, 6); pad.PaddingRight = UDim.new(0, 6)
+		pad.PaddingTop = UDim.new(0, 4); pad.PaddingBottom = UDim.new(0, 4)
+		Instance.new("UIStroke", tip).Color = Color3.fromRGB(0, 0, 0)
+		local function bind(inst)
+			if not inst then return end
+			inst.MouseEnter:Connect(function() tip.Visible = true end)
+			inst.MouseLeave:Connect(function() tip.Visible = false end)
+		end
+		bind(labelInstance(statusLabel)); bind(labelInstance(versionLabel))
+		UserInputService.InputChanged:Connect(function(input)
+			if tip.Visible and input.UserInputType == Enum.UserInputType.MouseMovement then
+				tip.Position = UDim2.fromOffset(input.Position.X + 18, input.Position.Y + 12)
+			end
+		end)
+		Bridge:RegisterAddon("StatusTip", { onUnload = function() pcall(function() tipGui:Destroy() end) end })
+	end)
 
 	-- Changelog viewer: the 3 sentences only load when the button is clicked.
 	clGroup:AddDropdown("clVersion", { Text = "Version", Values = versionStrings, Default = currentVersion, Multi = false, AllowNull = false, Tooltip = "Pick a version, then click View Changelog" })
 	local notesLabel = clGroup:AddLabel("Select a version and click 'View Changelog'.", true)
+	local clShown = false
 	clGroup:AddButton("View Changelog", function()
-		local v = Options.clVersion.Value
-		notesLabel:SetText((v and notesFor[v]) and (v .. ":\n" .. notesFor[v]) or "No notes for that version.")
-	end):AddToolTip("Show the changelog for the selected version (loads on click)")
+		if clShown then
+			notesLabel:SetText("Select a version and click 'View Changelog'.")  -- fold back up
+			clShown = false
+		else
+			local v = Options.clVersion.Value
+			notesLabel:SetText((v and notesFor[v]) and (v .. ":\n" .. notesFor[v]) or "No notes for that version.")
+			clShown = true
+		end
+	end):AddToolTip("Show/hide the changelog for the selected version")
 
 	-- Live status refresh; the loop exits cleanly when the script unloads.
 	task.spawn(function()
@@ -3914,6 +4476,125 @@ pcall(function()
 		end
 	end)
 	print("[Version/CL] Tab created. Current " .. currentVersion)
+end)
+
+-- Make the tab-scroll hint obvious. When there are more tabs than fit, LinoriaLib
+-- shows a small "scrollwheel >" marker above the tab bar; we find it and make it
+-- clearer + brighter. Best-effort (pcall) so it never breaks load.
+pcall(function()
+	local sg = Library.ScreenGui
+	if not sg then return end
+	for _, d in ipairs(sg:GetDescendants()) do
+		if d:IsA("TextLabel") and typeof(d.Text) == "string" and d.Text:lower():find("scroll") then
+			d.Text = "scroll-wheel here to switch tabs"
+			d.TextColor3 = Color3.fromRGB(255, 180, 60)
+			d.TextTransparency = 0
+			d.Visible = true
+		end
+	end
+end)
+
+-- ===== [Improvement #1] Per-game settings profile (auto-loads per PlaceId) =====
+pcall(function()
+	local HttpService = game:GetService("HttpService")
+	local PG_FILE = "FurryHBE_Game_" .. tostring(game.PlaceId) .. ".json"
+	local PG_KEYS = {
+		"MasterToggle","extenderToggled","extenderSize","extenderTransparency","hitboxShape",
+		"partSpecificSizing","headSize","torsoSize","limbSize","dynamicSizing","smoothTransitions",
+		"transitionSpeed","collisionsToggled","outlineMode","outlineTransparency","maxDistance",
+		"closestTargetsOnly","maxTargets","updateRate","randomizationToggled","randomizationAmount",
+		"humanizationToggled","legitModeToggled","seatDisableHBE","seatRadiusMode","seatRadius",
+		"espNameToggled","espNameSize","espHighlightToggled","espBoxToggled","espBoxScale",
+		"espTracerToggled","espSkeletonToggled","espHealthBarToggled","espNameType","espMaxDistance",
+		-- ESP extras + anti-detect
+		"espRainbow","espRainbowSpeed","espThickness","espDistanceFade","espChamsGlow",
+		"priorityFlash","smartJitter","maxPlausibleMult","espWhitelisted","espAntiOverlap","espOverlapGap",
+		-- Add-on modules (unified persistence)
+		"precisionEnabled","precisionExclusive","precisionHitboxSize","precisionTransparency","precisionShape",
+		"precisionCollisions","autoSelectTarget","selectionRadius","dynamicScalingEnabled",
+		"scalingCloseFactor","scalingFarFactor","scalingThreshold",
+		"vehicleAssist","vehicleJoltPower","vehicleSpeedLimiter","vehicleSpeedCap","vehicleManualMode",
+		"toolExpanderEnabled","toolExpandSize","toolAutoApply",
+		"infAmmoEnabled","infAmmoAllTools","infAmmoAmount",
+		"vehicleEspEnabled","mvHbeEnabled","mvHbeSize","mvHbeTransparency","mvHbeCollisions","mvHbeWholeModel",
+		"streamerMaster","hideFOVCircle","hidePlayerESP","hideChams","hideHitboxGlow",
+	}
+	local g = profilesTab:AddLeftGroupbox("Per-Game Profile")
+	g:AddLabel("Game PlaceId: " .. tostring(game.PlaceId), true)
+	local function savePG()
+		if not writefile then Library:Notify("Executor has no writefile"); return end
+		local data = {}
+		for _, k in ipairs(PG_KEYS) do
+			local c = Options[k] or Toggles[k]
+			if c ~= nil then
+				local v = c.Value
+				if type(v) == "number" or type(v) == "boolean" or type(v) == "string" then data[k] = v end
+			end
+		end
+		pcall(function() writefile(PG_FILE, HttpService:JSONEncode(data)) end)
+		Library:Notify("Saved settings for this game")
+	end
+	local function loadPG(notify)
+		if not (isfile and readfile and isfile(PG_FILE)) then
+			if notify then Library:Notify("No saved profile for this game") end
+			return
+		end
+		local ok, data = pcall(function() return HttpService:JSONDecode(readfile(PG_FILE)) end)
+		if ok and type(data) == "table" then
+			for k, v in pairs(data) do
+				local c = Options[k] or Toggles[k]
+				if c then pcall(function() c:SetValue(v) end) end
+			end
+			if notify then Library:Notify("Loaded this game's profile") end
+		end
+	end
+	g:AddButton("Save Game Profile", savePG):AddToolTip("Save current core settings, keyed to this game's PlaceId")
+	g:AddButton("Load Game Profile", function() loadPG(true) end):AddToolTip("Re-apply this game's saved settings")
+	g:AddButton("Delete Game Profile", function()
+		if delfile and isfile and isfile(PG_FILE) then pcall(function() delfile(PG_FILE) end); Library:Notify("Deleted this game's profile") end
+	end):AddToolTip("Forget the saved settings for this game")
+	pcall(function() loadPG(false) end)  -- auto-load on inject
+	print("[PerGameProfile] Ready for PlaceId " .. tostring(game.PlaceId))
+end)
+
+-- ===== [Improvement #9] Master Panic / Reset All =====
+pcall(function()
+	emergencyGroupbox:AddButton("PANIC / Reset All", function()
+		pcall(function() if Toggles.MasterToggle then Toggles.MasterToggle:SetValue(false) end end)
+		for _, k in ipairs({
+			"extenderToggled", "precisionEnabled", "vehicleAssist", "mvHbeEnabled",
+			"streamerMaster", "infAmmoEnabled", "vehicleEspEnabled", "toolExpanderEnabled",
+			"vehicleSpeedLimiter", "outlineMode", "espNameToggled", "espHighlightToggled",
+			"espBoxToggled", "espTracerToggled", "espSkeletonToggled", "fovFilterToggled",
+		}) do
+			pcall(function() if Toggles[k] then Toggles[k]:SetValue(false) end end)
+		end
+		pcall(function() if resetAllPlayers then resetAllPlayers() end end)
+		pcall(function() if resetWorldParts then resetWorldParts() end end)
+		local b = getgenv().FurryHBE
+		if b and b.Streamer then
+			b.Streamer.hideESP, b.Streamer.hideChams, b.Streamer.hideFOV, b.Streamer.hideHitbox = false, false, false, false
+		end
+		Library:Notify("PANIC: every feature off, all hitboxes/visuals restored")
+	end):AddToolTip("One click: turn every feature off and restore all hitboxes/visuals to normal")
+end)
+
+-- ===== [Improvement #15] On-screen watermark (name | tracked | status) =====
+pcall(function()
+	pcall(function() Library:SetWatermarkVisibility(true) end)
+	task.spawn(function()
+		while getgenv().FurryHBEInjected do
+			pcall(function()
+				local n = 0
+				for _ in pairs(players) do n = n + 1 end
+				local status = (#errorLog == 0) and "OK" or ("ERR " .. #errorLog)
+				if Library.SetWatermark then
+					Library:SetWatermark(string.format("cryptonize's library  |  tracked %d  |  %s", n, status))
+				end
+			end)
+			task.wait(1)
+		end
+	end)
 end)
 
 pcall(finalInit)
@@ -3929,13 +4610,26 @@ pcall(function()
 	end
 end)
 
--- Global error handler for uncaught errors
+-- Adaptive self-heal watchdog. Every few seconds it reconciles the tracked-player
+-- table with the real player list: re-adds anyone missing (a PlayerAdded that was
+-- missed, or an object that got dropped) and prunes players who left. Keeps ESP/HBE
+-- working without needing the manual "Fix Missing Players" button, and recovers
+-- automatically from transient errors. Everything is pcall'd so it can't break.
 task.spawn(function()
-	while true do
-		task.wait(1)
-		-- Periodic health check
-		if getgenv().FurryHBELoaded and Library then
-			-- Script is running, do nothing
-		end
+	while getgenv().FurryHBEInjected do
+		task.wait(3)
+		pcall(function()
+			for _, plr in ipairs(Players:GetPlayers()) do
+				if plr ~= lPlayer and not players[plr] then
+					pcall(addPlayer, plr)
+				end
+			end
+			for plr in pairs(players) do
+				if typeof(plr) ~= "Instance" or not plr.Parent then
+					pcall(function() removePlayer(plr) end)
+					players[plr] = nil
+				end
+			end
+		end)
 	end
 end)
