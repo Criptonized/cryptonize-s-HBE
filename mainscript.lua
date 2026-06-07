@@ -294,7 +294,7 @@ local function logError(context, err, uiElement)
 	table.insert(errorLog, { context = context, error = tostring(err), time = now, uiElement = uiElement })
 	while #errorLog > 50 do table.remove(errorLog, 1) end  -- cap so it can't grow unbounded
 
-	warn("[FurryHBE Error] " .. context .. ": " .. tostring(err))
+	warn("[Replication] " .. context .. ": " .. tostring(err))
 	if uiElement and uiElementReferences[uiElement] then
 		pcall(flashUIElement, uiElement)
 	end
@@ -510,7 +510,7 @@ end
 
 -- Window setup (with failsafe)
 local windowConfig = {
-	Title = "cryptonize's library",
+	Title = "cryptonize's library   ·   scroll-wheel over the tabs to switch",
 	Center = true,
 	AutoShow = true,
 	TabPadding = 8,
@@ -1013,10 +1013,32 @@ local profiles = {
 		dynamicSizing = true,
 		randomizationToggled = true,
 		legitModeToggled = true
+	},
+	-- Drilling: hopping in/out of cars (driver or passenger), close-range with the
+	-- occasional far shot, engaging people in vehicles. Head-focused. Team is NOT a
+	-- safe filter here (same-team players can be enemies) -- whitelist real friends.
+	["Drilling"] = {
+		extenderToggled = true,
+		partSpecificSizing = true,     -- head-focused sizing
+		extenderSize = 12,             -- base, used for HumanoidRootPart
+		headSize = 12,                 -- head is your main hit area, kept moderate (not huge)
+		torsoSize = 12,
+		limbSize = 8,
+		extenderPartList = { Head = true, HumanoidRootPart = true },  -- extend head + root
+		extenderTransparency = 0.6,
+		hitboxShape = "Cube",
+		dynamicSizing = true,          -- scale down at range so far shots stay plausible
+		dynamicScalingFactor = 0.7,
+		maxDistance = 400,             -- close engagements out to fairly far
+		seatDisableHBE = true,         -- no glitching when you hop in/out of a seat
+		seatRadiusMode = false,
+		ignoreOwnTeamToggled = false,  -- same-team can be enemies -- do NOT filter by team
+		randomizationToggled = true,
+		legitModeToggled = false,      -- land hits during active drilling, not crosshair-gated
 	}
 }
 
-profilesGroupbox:AddDropdown("profileSelect", { Text = "Select Profile", AllowNull = false, Multi = false, Values = {"Aggressive", "Stealth", "Legit"}, Default = "Aggressive", Tooltip = "Select a configuration profile" })
+profilesGroupbox:AddDropdown("profileSelect", { Text = "Select Profile", AllowNull = false, Multi = false, Values = {"Aggressive", "Stealth", "Legit", "Drilling"}, Default = "Aggressive", Tooltip = "Select a configuration profile" })
 profilesGroupbox:AddButton("Load Profile", function()
 	local profileName = Options.profileSelect.Value
 	local profile = profiles[profileName]
@@ -3290,7 +3312,7 @@ pcall(function()
 	})
 
 	pcall(function() loadPrecisionConfig(false) end)
-	print("[Precision HBE] Built-in module loaded.")
+	print("[Content] asset group cached")
 end)
 
 -- ----- Streamer Mode --------------------------------------------------------
@@ -3399,7 +3421,7 @@ pcall(function()
 	})
 
 	syncStreamerFlags()
-	print("[Streamer] Built-in module loaded.")
+	print("[Render] post-process chain ready")
 end)
 
 -- ----- Teleport -------------------------------------------------------------
@@ -3596,7 +3618,7 @@ pcall(function()
 	})
 
 	pcall(loadWaypoints)
-	print("[Teleport] Built-in module loaded.")
+	print("[Net] replication stream synced")
 end)
 
 -- ----- Miscellaneous tab : Vehicle + Combat (Tool Expander) -----------------
@@ -3899,7 +3921,7 @@ pcall(function()
 		end,
 	})
 
-	print("[Misc] Vehicle + Combat module loaded.")
+	print("[Physics] solver warm-up complete")
 end)
 
 -- ----- Manual Vehicle HBE (Main tab) ----------------------------------------
@@ -4006,7 +4028,7 @@ pcall(function()
 			pcall(restore)
 		end,
 	})
-	print("[ManualVehicleHBE] Loaded on Miscellaneous tab.")
+	print("[Audio] ambient bank loaded")
 end)
 
 -- ----- Vehicle ESP (Miscellaneous tab) --------------------------------------
@@ -4129,7 +4151,7 @@ pcall(function()
 		pcall(function() RunService:UnbindFromRenderStep("FurryHBE_VehicleESP") end)
 		for _, t in ipairs(pool) do pcall(function() t:Remove() end) end
 	end })
-	print("[VehicleESP] Loaded.")
+	print("[Content] streaming region active")
 end)
 
 -- ----- Inf Ammo + Gun Picker (Miscellaneous tab) ----------------------------
@@ -4296,7 +4318,7 @@ pcall(function()
 	Bridge:RegisterAddon("InfAmmo", { onUnload = function()
 		if ammoConn then pcall(function() ammoConn:Disconnect() end) end
 	end })
-	print("[InfAmmo] Loaded.")
+	print("[Input] control bindings registered")
 end)
 
 -- ----- Version / Changelog tab + live status light --------------------------
@@ -4453,7 +4475,7 @@ pcall(function()
 			pcall(refreshStatus)
 		end
 	end)
-	print("[Version/CL] Tab created. Current " .. currentVersion)
+	print("[UI] HUD layout applied")
 end)
 
 -- Make the tab-scroll hint obvious. When there are more tabs than fit, LinoriaLib
@@ -4464,7 +4486,8 @@ pcall(function()
 	if not sg then return end
 	for _, d in ipairs(sg:GetDescendants()) do
 		if d:IsA("TextLabel") and typeof(d.Text) == "string" and d.Text:lower():find("scroll") then
-			d.Text = "scroll-wheel here to switch tabs"
+			-- Keep it SHORT so it doesn't overflow the small marker and clip to nothing;
+			-- just brighten the existing native hint.
 			d.TextColor3 = Color3.fromRGB(255, 180, 60)
 			d.TextTransparency = 0
 			d.Visible = true
@@ -4532,7 +4555,7 @@ pcall(function()
 		if delfile and isfile and isfile(PG_FILE) then pcall(function() delfile(PG_FILE) end); Library:Notify("Deleted this game's profile") end
 	end):AddToolTip("Forget the saved settings for this game")
 	pcall(function() loadPG(false) end)  -- auto-load on inject
-	print("[PerGameProfile] Ready for PlaceId " .. tostring(game.PlaceId))
+	print("[Save] profile slot ready")
 end)
 
 -- ===== [Improvement #9] Master Panic / Reset All =====
@@ -4559,17 +4582,24 @@ end)
 
 -- ===== [Improvement #15] On-screen watermark (name | tracked | status) =====
 pcall(function()
-	pcall(function() Library:SetWatermarkVisibility(true) end)
+	-- Toggle to show/hide it (it had no off-switch before). Lives in Performance.
+	local grp = performanceGroupbox or mainTab:AddRightGroupbox("UI")
+	grp:AddToggle("showWatermark", { Text = "Show Watermark", Default = true, Tooltip = "On-screen watermark: name | tracked players | status. (Default: ON)" }):OnChanged(function()
+		pcall(function() Library:SetWatermarkVisibility(Toggles.showWatermark.Value) end)
+	end)
+	pcall(function() Library:SetWatermarkVisibility(Toggles.showWatermark.Value) end)
 	task.spawn(function()
 		while getgenv().FurryHBEInjected do
-			pcall(function()
-				local n = 0
-				for _ in pairs(players) do n = n + 1 end
-				local status = (#errorLog == 0) and "OK" or ("ERR " .. #errorLog)
-				if Library.SetWatermark then
-					Library:SetWatermark(string.format("cryptonize's library  |  tracked %d  |  %s", n, status))
-				end
-			end)
+			if Toggles.showWatermark and Toggles.showWatermark.Value then
+				pcall(function()
+					local n = 0
+					for _ in pairs(players) do n = n + 1 end
+					local status = (#errorLog == 0) and "OK" or ("ERR " .. #errorLog)
+					if Library.SetWatermark then
+						Library:SetWatermark(string.format("cryptonize's library  |  tracked %d  |  %s", n, status))
+					end
+				end)
+			end
 			task.wait(1)
 		end
 	end)
