@@ -56,31 +56,9 @@ end
 SaveManager:SetLibrary(Library)
 SaveManager:SetFolder("FurryHBE")
 
--- Make every tooltip wrap to multiple short lines so long descriptions can't run
--- off the screen. We word-wrap the text before LinoriaLib builds the tooltip.
--- (Patched before any UI is created so it applies to all controls. Best-effort.)
-pcall(function()
-	local orig = Library.AddToolTip
-	if type(orig) ~= "function" then return end
-	local function wrap(s, width)
-		s = tostring(s)
-		if #s <= width and not s:find("\n") then return s end
-		local out, line = {}, ""
-		for word in s:gmatch("%S+") do
-			if #line + #word + 1 > width then
-				table.insert(out, line); line = word
-			else
-				line = (line == "") and word or (line .. " " .. word)
-			end
-		end
-		if line ~= "" then table.insert(out, line) end
-		return table.concat(out, "\n")
-	end
-	Library.AddToolTip = function(self, info, hover)
-		if type(info) == "string" then info = wrap(info, 44) end
-		return orig(self, info, hover)
-	end
-end)
+-- NOTE: the previous global Library.AddToolTip wrapper was removed -- on some
+-- LinoriaLib forks it broke control creation (the UI only built the first tab).
+-- Tooltips that need multiple lines just use explicit \n in their text instead.
 
 -- GUI-based Drawing fallback for Potassium
 local DrawingFallback = {}
