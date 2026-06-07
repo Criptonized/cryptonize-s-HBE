@@ -871,8 +871,8 @@ antiDetectionGroupbox:AddSlider("seatRadius", { Text = "Seated Radius (studs)", 
 
 -- Ignores
 ignoresGroupbox:AddToggle("extenderSitCheck", { Text = "Ignore Sitting Players", Default = false, Tooltip = "Don't extend players who are sitting. (Default: OFF)" }):OnChanged(updatePlayers)
-ignoresGroupbox:AddToggle("seatExitDelayEnabled", { Text = "Sitting Grace After Exit", Default = false, Tooltip = "After YOU leave a seat/car, keep hitboxes OFF for players who are\nstill sitting for the delay below, so you don't insta-hit someone\nmid-stand. Whitelisted players are unaffected (already ignored).\n(Default: OFF)" }):OnChanged(updatePlayers)
-ignoresGroupbox:AddSlider("seatExitDelay", { Text = "Sitting Grace (sec)", Min = 1, Max = 15, Default = 6, Rounding = 1, Tooltip = "How long after you exit a seat to keep still-seated players un-extended. (Default: 6)" })
+ignoresGroupbox:AddToggle("seatExitDelayEnabled", { Text = "Sitting Grace After Exit", Default = false, Tooltip = "When you exit a seat/car, temporarily SUSPEND 'Ignore Sitting\nPlayers' for the delay below so you CAN hit players still seated\n(e.g. hop out to shoot the people still in their cars). Ignore-\nsitting resumes after. Needs 'Ignore Sitting Players' on. (Default: OFF)" }):OnChanged(updatePlayers)
+ignoresGroupbox:AddSlider("seatExitDelay", { Text = "Sitting Grace (sec)", Min = 1, Max = 15, Default = 6, Rounding = 1, Tooltip = "How long after you exit a seat that sitting players stay\ntargetable before 'Ignore Sitting Players' kicks back in. (Default: 6)" })
 ignoresGroupbox:AddToggle("extenderFFCheck", { Text = "Ignore Forcefielded Players", Default = false, Tooltip = "Don't extend players with forcefields. (Default: OFF)" }):OnChanged(updatePlayers)
 ignoresGroupbox:AddToggle("ignoreSelectedPlayersToggled", { Text = "Ignore Selected Players", Default = false, Tooltip = "Don't extend selected players. (Default: OFF)" }):OnChanged(updatePlayers)
 ignoresGroupbox:AddDropdown("ignorePlayerList", { Text = "Players", AllowNull = true, Multi = true, Values = {}, Tooltip = "Select players to ignore. (Default: none)" }):OnChanged(updatePlayers)
@@ -1894,17 +1894,20 @@ function addPlayer(player)
 	local function isSitting()
 		local humanoid = playerChar:FindFirstChildWhichIsA("Humanoid")
 		local sittingNow = humanoid ~= nil and humanoid.Sit == true
-		if Toggles.extenderSitCheck.Value and sittingNow then return true end
-		-- Sitting grace after exit: for a short window after YOU leave a seat, keep HBE
-		-- off for players who are still seated so you don't insta-hit someone mid-stand.
-		-- Whitelisted players are already excluded by isIgnored(), so the whitelist is
-		-- respected automatically. (F7)
-		if sittingNow and Toggles.seatExitDelayEnabled and Toggles.seatExitDelayEnabled.Value then
+		if not sittingNow then return false end
+		-- "Ignore Sitting Players" off => seated players extend normally.
+		if not Toggles.extenderSitCheck.Value then return false end
+		-- Sitting grace after exit: for a short window after YOU leave a seat,
+		-- SUSPEND "Ignore Sitting Players" so you CAN hit players who are still seated
+		-- (e.g. you hop out of your car to shoot the people still sitting in theirs).
+		-- After the window, ignore-sitting resumes. Whitelisted players stay ignored
+		-- via isIgnored(), so the whitelist is still respected. (F7)
+		if Toggles.seatExitDelayEnabled and Toggles.seatExitDelayEnabled.Value then
 			local t = Bridge.lastSeatExitTime
 			local delay = (Options.seatExitDelay and Options.seatExitDelay.Value) or 6
-			if t and (tick() - t) < delay then return true end
+			if t and (tick() - t) < delay then return false end
 		end
-		return false
+		return true
 	end
 
 	local function isFFed()
@@ -1969,7 +1972,18 @@ function addPlayer(player)
 				if applied and applied[property] == part[property] then
 					return
 				end
-				if properties[property] ~= part[property] then
+				if property == "Size" then
+					-- Extension only ever GROWS a part, so a LARGER size reported here is
+					-- our own extension leaking past the guard above (deferred .Changed
+					-- lag with smooth/dynamic/random sizing). Saving that as the "default"
+					-- is exactly what left heads/parts stuck big after HBE or Disable-
+					-- While-Seated turned off. Only accept a NOT-larger size as a new real
+					-- default; never let the stored default grow. (restore-bug fix)
+					local cur, def = part.Size, properties.Size
+					if cur.X <= def.X + 0.05 and cur.Y <= def.Y + 0.05 and cur.Z <= def.Z + 0.05 then
+						properties.Size = cur
+					end
+				elseif properties[property] ~= part[property] then
 					properties[property] = part[property]
 				end
 				playerIdx:Update()
@@ -3577,6 +3591,7 @@ pcall(function()
 	waypointGroup:AddDropdown("waypointList", { Text = "Saved Waypoints", AllowNull = true, Multi = false, Values = {}, Default = nil, Tooltip = "Select a waypoint to teleport to. (Default: none)" })
 
 	settingsGroup:AddToggle("useSitTeleport", { Text = "Sit Before Teleport", Default = true, Tooltip = "Sit on a temporary seat first to mask the teleport as a normal move. (Default: ON)" })
+	settingsGroup:AddToggle("tpPreload", { Text = "Preload Destination", Default = true, Tooltip = "Before teleporting, ask the engine to stream in the area around\nyour destination (StreamingEnabled games) so you don't drop into\na 'Gameplay Paused' while it loads in around you. (Default: ON)" })
 	settingsGroup:AddToggle("desyncFlash", { Text = "Desync Flash", Default = false, Tooltip = "Briefly flicker position to mask the teleport as\nnetwork lag (can fling in some games). (Default: OFF)" })
 	settingsGroup:AddSlider("teleportSitTime", { Text = "Sit Settle Time", Min = 0.05, Max = 1, Default = 0.3, Rounding = 2, Tooltip = "How long to stay seated around the teleport. (Default: 0.3)" })
 
@@ -3590,6 +3605,12 @@ pcall(function()
 		if not humanoid or not root then return end
 		local settle = (Options.teleportSitTime and Options.teleportSitTime.Value) or 0.3
 		local dest = CFrame.new(targetPosition)
+		-- Pre-stream the destination so StreamingEnabled games don't drop into a
+		-- "Gameplay Paused" while the area loads in around you after the hop. Yields
+		-- until the region is ready (~2s cap); pcall'd so it's a no-op where unsupported.
+		if (Toggles.tpPreload == nil) or Toggles.tpPreload.Value then
+			pcall(function() lPlayer:RequestStreamAroundAsync(targetPosition, 2) end)
+		end
 		if Toggles.useSitTeleport.Value then
 			local seat = Instance.new("Part")
 			seat.Name = "FurryHBE_TempSeat"
@@ -3807,6 +3828,9 @@ pcall(function()
 	speedGroup:AddSlider("vehicleJoltPower", { Text = "Jolt Power", Min = 10, Max = 500, Default = 120, Rounding = 1, Tooltip = "Burst of speed per key press. Studs/sec normally, or a %\nof the car's own top speed if 'Jolt in car's units' is on.\n(Default: 120)" })
 	speedGroup:AddToggle("vehicleJoltRelative", { Text = "Jolt in car's units", Default = false, Tooltip = "Treat Jolt Power as a % of the car's OWN top speed\n(auto-detected from its VehicleSeat) so a jolt feels the\nsame on slow and fast cars. (Default: OFF)" })
 	speedGroup:AddToggle("vehicleTripleTap", { Text = "Triple-tap key = toggle Assist", Default = false, Tooltip = "Tap the Jolt key 3x quickly to flip Vehicle Assist on/off.\nThose 3 taps won't jolt. (Default: OFF)" })
+	speedGroup:AddToggle("vehicleAccelerator", { Text = "Speed Accelerator", Default = false, Tooltip = "While you're driving, smoothly builds your speed up to the\nTop Speed below -- a natural power boost that keeps your\nsteering and doesn't shock the suspension like the jolt. (Default: OFF)" })
+	speedGroup:AddSlider("vehicleTopSpeed", { Text = "Top Speed (studs/s)", Min = 20, Max = 500, Default = 120, Rounding = 0, Tooltip = "Target speed the accelerator ramps you up to. (Default: 120)" })
+	speedGroup:AddSlider("vehicleAccelRate", { Text = "Acceleration", Min = 10, Max = 400, Default = 80, Rounding = 0, Tooltip = "How quickly the accelerator builds speed (studs/sec^2).\nLower = gentler, higher = snappier. (Default: 80)" })
 
 	detectGroup:AddDropdown("vehicleDetectionMode", { Text = "Detection Mode", Values = { "Auto", "A-Chassis", "Basic Seat", "Custom Script" }, Default = "Auto", Multi = false, AllowNull = false, Tooltip = "Leave on Auto -- it detects A-Chassis / VehicleSeat /\ncustom cars for you and shows the result in Vehicle: Info.\nThe other options only force the label if Auto guesses\nwrong; they don't change how assist behaves. (Default: Auto)" })
 	detectGroup:AddButton("Refresh Detection", function()
@@ -3838,8 +3862,7 @@ pcall(function()
 		Library:Notify("Manual vehicle cleared")
 	end):AddToolTip("Forget the manually picked vehicle")
 
-	stabilGroup:AddToggle("vehicleStabilizer", { Text = "Auto-Stabilizer", Default = true, Tooltip = "Keeps the car upright (anti-flip) and adds grip so it stops\nsliding around like it's on ice. Turn OFF for raw, unassisted\ndriving -- jolt + limiter still work. (Default: ON)" })
-	stabilGroup:AddSlider("vehicleGripStrength", { Text = "Grip (anti-slide)", Min = 0, Max = 100, Default = 55, Rounding = 0, Tooltip = "How hard sideways sliding is killed. Higher = planted/sticky,\nlower = driftier, 0 = no grip. Only active with the\nAuto-Stabilizer on. (Default: 55)" })
+	stabilGroup:AddToggle("vehicleStabilizer", { Text = "Auto-Stabilizer", Default = true, Tooltip = "Gentle anti-rollover: only nudges the car upright if it tips\npast ~35 degrees, with light torque -- so it never fights your\nsteering or makes the car float/skate. Turn OFF for fully raw\ndriving. (Default: ON)" })
 	stabilGroup:AddToggle("vehicleSpeedLimiter", { Text = "Speed Limiter", Default = false, Tooltip = "ON = caps your speed at the limit below even if you keep\njolting. OFF = jolts uncapped (hit the jets). (Default: OFF)" })
 	stabilGroup:AddSlider("vehicleSpeedCap", { Text = "Speed Limit (studs/s)", Min = 20, Max = 500, Default = 120, Rounding = 1, Tooltip = "Max horizontal speed while the limiter is on. (Default: 120)" })
 	stabilGroup:AddButton("Match Car's Top Speed", function()
@@ -3975,13 +3998,25 @@ pcall(function()
 		return root, primary
 	end
 
-	-- One Heartbeat: optional auto-stabilizer (upright + grip) and the speed limiter.
-	-- The stabilizer is its own toggle, so jolt/limiter can run with no assist physics.
+	-- Direction the car is actually travelling: follow horizontal velocity when moving
+	-- (so boosts always push the way you DRIVE, never a fixed axis -- the old jolt used
+	-- LookVector which threw the car off to one side), else fall back to chassis facing.
+	local function drivingForward(primary, vel)
+		local horiz = Vector3.new(vel.X, 0, vel.Z)
+		if horiz.Magnitude > 4 then return horiz.Unit end
+		local f = primary.CFrame.LookVector
+		f = Vector3.new(f.X, 0, f.Z)
+		if f.Magnitude < 0.05 then return nil end
+		return f.Unit
+	end
+
+	-- One Heartbeat: gentle anti-rollover stabilizer + smooth accelerator + limiter.
 	local lastInfoRefresh = 0
 	local function assistStep(dt)
 		if not Toggles.vehicleAssist.Value then clearGyro(); return end
 		local _, primary = ensureVehicle()
 		if not primary then clearGyro(); return end
+		dt = dt or 1/60
 
 		-- Keep the Info readout current while you're driving (throttled). (F5)
 		if tick() - lastInfoRefresh > 0.5 then
@@ -3990,44 +4025,55 @@ pcall(function()
 		end
 
 		local vel = primary.AssemblyLinearVelocity
-		local speed = vel.Magnitude
+		local cf = primary.CFrame
 
-		local stabilize = (Toggles.vehicleStabilizer == nil) or Toggles.vehicleStabilizer.Value
-		if stabilize then
-			-- Anti-flip: keep upright on roll+pitch ONLY (yaw stays free so steering
-			-- isn't fought). Softer, well-damped values than before so the car still
-			-- leans and turns like a car instead of wobbling/skating. (F1)
+		-- ===== Stabilizer: GENTLE anti-rollover ONLY =====
+		-- Only nudges the car upright when it tips past a threshold, with light torque,
+		-- so normal driving/leaning/steering is never fought. No velocity rewriting, so
+		-- it can't make the car float or skate (the old grip+stiff-gyro problem).
+		if (Toggles.vehicleStabilizer == nil) or Toggles.vehicleStabilizer.Value then
+			local up = cf.UpVector
+			local tiltDeg = math.deg(math.acos(math.clamp(up:Dot(Vector3.new(0, 1, 0)), -1, 1)))
 			local gyro = primary:FindFirstChild("FurryHBE_StabGyro")
-			if not gyro then
-				gyro = Instance.new("BodyGyro")
-				gyro.Name = "FurryHBE_StabGyro"
-				gyro.Parent = primary
-			end
-			gyro.P = math.clamp(1500 + speed * 60, 1500, 9000)
-			gyro.D = 750
-			local torque = math.clamp(4000 + speed * 1200, 4000, 40000)
-			gyro.MaxTorque = Vector3.new(torque, 0, torque)
-			local _, yaw = primary.CFrame:ToEulerAnglesYXZ()
-			gyro.CFrame = CFrame.new(primary.Position) * CFrame.Angles(0, yaw, 0)
-
-			-- Grip (anti-ice): bleed off sideways velocity so the car stops skating,
-			-- while forward speed AND steering (yaw) stay untouched. Frame-rate
-			-- compensated so the feel is the same at any FPS. (F1)
-			local gripPct = ((Options.vehicleGripStrength and Options.vehicleGripStrength.Value) or 55) / 100
-			if gripPct > 0 and speed > 1 then
-				local right = primary.CFrame.RightVector
-				local lateral = right:Dot(vel)
-				local f = math.clamp(gripPct * ((dt or 1/60) * 60), 0, 1)
-				primary.AssemblyLinearVelocity = vel - right * (lateral * f)
-				vel = primary.AssemblyLinearVelocity
+			if tiltDeg > 35 then
+				if not gyro then
+					gyro = Instance.new("BodyGyro")
+					gyro.Name = "FurryHBE_StabGyro"
+					gyro.Parent = primary
+				end
+				gyro.P = 2200          -- light: a nudge, not a clamp
+				gyro.D = 500
+				gyro.MaxTorque = Vector3.new(9000, 0, 9000)
+				local _, yaw = cf:ToEulerAnglesYXZ()
+				gyro.CFrame = CFrame.new(cf.Position) * CFrame.Angles(0, yaw, 0)
+			elseif gyro then
+				gyro:Destroy()        -- upright enough: stop fighting entirely
 			end
 		else
-			-- Stabilizer off: make sure no leftover gyro keeps fighting the car.
 			local g = primary:FindFirstChild("FurryHBE_StabGyro")
 			if g then g:Destroy() end
 		end
 
-		-- Speed limiter (runs under the master toggle, independent of the stabilizer).
+		-- ===== Accelerator: smooth ramp to Top Speed =====
+		-- Adjusts only the FORWARD component of velocity, gradually, and ONLY while you
+		-- are already driving -- so it feels like natural power, keeps your steering, and
+		-- never shocks the suspension or auto-creeps when parked.
+		if Toggles.vehicleAccelerator and Toggles.vehicleAccelerator.Value then
+			local fwd = drivingForward(primary, vel)
+			local horizSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
+			if fwd and horizSpeed > 4 then
+				local top = (Options.vehicleTopSpeed and Options.vehicleTopSpeed.Value) or 120
+				local fSpeed = vel:Dot(fwd)
+				if fSpeed >= 0 and fSpeed < top then
+					local rate = (Options.vehicleAccelRate and Options.vehicleAccelRate.Value) or 80
+					local newF = math.min(top, fSpeed + rate * dt)
+					primary.AssemblyLinearVelocity = vel + fwd * (newF - fSpeed)
+					vel = primary.AssemblyLinearVelocity
+				end
+			end
+		end
+
+		-- ===== Speed limiter (independent of stabilizer) =====
 		if Toggles.vehicleSpeedLimiter.Value then
 			local cap = Options.vehicleSpeedCap.Value
 			local horiz = Vector3.new(vel.X, 0, vel.Z)
@@ -4055,7 +4101,11 @@ pcall(function()
 				power = sys.maxSpeed * (Options.vehicleJoltPower.Value / 100)
 			end
 		end
-		local newVel = primary.AssemblyLinearVelocity + primary.CFrame.LookVector * power
+		-- Push along the way you're actually DRIVING (velocity-aligned when moving, else
+		-- chassis facing) so the jolt never throws the car off to a fixed side. (fix)
+		local vel = primary.AssemblyLinearVelocity
+		local fwd = drivingForward(primary, vel) or primary.CFrame.LookVector
+		local newVel = vel + fwd * power
 		-- Anti-fling: a single jolt can never produce an absurd velocity.
 		if newVel.Magnitude > 2000 then newVel = newVel.Unit * 2000 end
 		primary.AssemblyLinearVelocity = newVel
@@ -4349,6 +4399,7 @@ pcall(function()
 
 	local g = miscTab:AddLeftGroupbox("Vehicle ESP")
 	g:AddToggle("vehicleEspEnabled", { Text = "Enable Vehicle ESP", Default = false, Tooltip = "Draw name + type + distance on registered vehicles. (Default: OFF)" })
+	g:AddToggle("vehicleEspAutoTrack", { Text = "Auto-Track Vehicles", Default = true, Tooltip = "Continuously find drivable vehicles (anything with a\nVehicleSeat) and keep the list LIVE -- new spawns are added,\ndestroyed/despawned ones are removed automatically, so it\nnever shows a car you spawned ages ago. (Default: ON)" })
 	g:AddDropdown("vehicleEspList", { Text = "Registered Vehicles", Values = {}, Multi = false, AllowNull = true, Tooltip = "Vehicles currently tracked. (Default: none)" })
 	g:AddDropdown("vehicleEspType", { Text = "Mark As", Values = { "Car", "Helicopter", "Boat", "Plane" }, Default = "Car", Multi = false, AllowNull = false, Tooltip = "Type to tag the selected vehicle with (saved to disk). (Default: Car)" })
 
@@ -4361,7 +4412,20 @@ pcall(function()
 		end
 	end)
 	local function saveTypes() if writefile then pcall(function() writefile(VE_FILE, HttpService:JSONEncode(vehicleTypes)) end) end end
+	-- Drop registered vehicles whose model was destroyed/despawned, so the list never
+	-- shows the car you spawned several respawns ago.
+	local function pruneDead()
+		local changed = false
+		for i = #registered, 1, -1 do
+			local m = registered[i].model
+			if not (typeof(m) == "Instance" and m.Parent) then
+				table.remove(registered, i); changed = true
+			end
+		end
+		return changed
+	end
 	local function refreshList()
+		pruneDead()
 		local names = {}
 		for _, e in ipairs(registered) do table.insert(names, e.name) end
 		Options.vehicleEspList.Values = names
@@ -4369,25 +4433,32 @@ pcall(function()
 	end
 	local function isRegistered(m) for _, e in ipairs(registered) do if e.model == m then return true end end return false end
 	local function registerModel(m)
-		if not m or not m:IsA("Model") or isRegistered(m) then return end
+		if not m or not m:IsA("Model") or isRegistered(m) then return false end
 		table.insert(registered, { model = m, name = m.Name, type = vehicleTypes[m.Name] or "Car" })
-		refreshList()
+		return true
 	end
-
-	g:AddButton("Scan Vehicles", function()
-		local count = 0
+	-- Find every model that contains a VehicleSeat (i.e. a drivable/operatable vehicle).
+	local function scanVehicles()
+		local added = 0
 		for _, d in ipairs(Workspace:GetDescendants()) do
 			if d:IsA("VehicleSeat") then
 				local m = d:FindFirstAncestorWhichIsA("Model")
-				if m and not isRegistered(m) then registerModel(m); count = count + 1 end
+				if m and not isRegistered(m) and registerModel(m) then added = added + 1 end
 			end
 		end
-		Library:Notify("Vehicle ESP: registered " .. count .. " vehicle(s)")
-	end):AddToolTip("Find models that contain a VehicleSeat and register them")
+		return added
+	end
+
+	g:AddButton("Scan Vehicles", function()
+		pruneDead()
+		local count = scanVehicles()
+		refreshList()
+		Library:Notify("Vehicle ESP: " .. count .. " new (" .. #registered .. " tracked)")
+	end):AddToolTip("Find models that contain a VehicleSeat and register them (Auto-Track keeps this live for you)")
 	g:AddButton("Register (hold-pick)", function()
 		Bridge:StartHoldPick({ color = Color3.fromRGB(0, 255, 170), onPick = function(part)
 			local m = part:FindFirstAncestorWhichIsA("Model") or part
-			registerModel(m); Library:Notify("Registered vehicle: " .. m.Name)
+			registerModel(m); refreshList(); Library:Notify("Registered vehicle: " .. m.Name)
 		end })
 	end):AddToolTip("Aim at a vehicle and hold-click to register it")
 	g:AddButton("Set Type to Selected", function()
@@ -4404,6 +4475,28 @@ pcall(function()
 		refreshList()
 	end)
 	g:AddButton("Clear All", function() registered = {}; refreshList() end)
+
+	-- Auto-track: keep the registry live without manual scanning. Throttled so it's
+	-- cheap, and only refreshes the dropdown when the set actually changes (so it
+	-- won't fight your selection). Prunes destroyed/despawned models too.
+	local lastAutoScan = 0
+	local autoScanConn = RunService.Heartbeat:Connect(function()
+		if not (Toggles.vehicleEspAutoTrack and Toggles.vehicleEspAutoTrack.Value) then return end
+		if tick() - lastAutoScan < 1.5 then return end
+		lastAutoScan = tick()
+		local changed = pruneDead()
+		if scanVehicles() > 0 then changed = true end
+		-- Also grab the car YOU are sitting in -- covers single-model cars whose seat
+		-- the Workspace sweep might not have matched, so your own vehicle always shows.
+		pcall(function()
+			local lhum = lPlayer.Character and lPlayer.Character:FindFirstChildWhichIsA("Humanoid")
+			if lhum and lhum.SeatPart then
+				local m = lhum.SeatPart:FindFirstAncestorWhichIsA("Model")
+				if m and not isRegistered(m) and registerModel(m) then changed = true end
+			end
+		end)
+		if changed then refreshList() end
+	end)
 
 	local pool = {}
 	local function getText(i)
@@ -4453,6 +4546,7 @@ pcall(function()
 
 	Bridge:RegisterAddon("VehicleESP", { onUnload = function()
 		pcall(function() RunService:UnbindFromRenderStep("FurryHBE_VehicleESP") end)
+		if autoScanConn then pcall(function() autoScanConn:Disconnect() end) end
 		for _, t in ipairs(pool) do pcall(function() t:Remove() end) end
 	end })
 	print("[Content] streaming region active")
@@ -4820,10 +4914,10 @@ pcall(function()
 		"precisionEnabled","precisionExclusive","precisionHitboxSize","precisionTransparency","precisionShape",
 		"precisionCollisions","autoSelectTarget","selectionRadius","dynamicScalingEnabled",
 		"scalingCloseFactor","scalingFarFactor","scalingThreshold",
-		"vehicleAssist","vehicleJoltPower","vehicleJoltRelative","vehicleTripleTap","vehicleStabilizer","vehicleGripStrength","vehicleSpeedLimiter","vehicleSpeedCap","vehicleManualMode",
+		"vehicleAssist","vehicleJoltPower","vehicleJoltRelative","vehicleTripleTap","vehicleAccelerator","vehicleTopSpeed","vehicleAccelRate","vehicleStabilizer","vehicleSpeedLimiter","vehicleSpeedCap","vehicleManualMode",
 		"toolExpanderEnabled","toolExpandSize","toolAutoApply","toolAutoScanEquip",
 		"infAmmoEnabled","infAmmoAllTools","infAmmoAmount",
-		"vehicleEspEnabled","mvHbeEnabled","mvHbeSize","mvHbeTransparency","mvHbeCollisions","mvHbeWholeModel",
+		"vehicleEspEnabled","vehicleEspAutoTrack","mvHbeEnabled","mvHbeSize","mvHbeTransparency","mvHbeCollisions","mvHbeWholeModel",
 		"streamerMaster","hideFOVCircle","hidePlayerESP","hideChams","hideHitboxGlow",
 	}
 	local g = profilesTab:AddLeftGroupbox("Per-Game Profile")
