@@ -172,7 +172,18 @@ function DrawingFallback:Update()
 		self.element.Position = UDim2.new(0, self.position.X, 0, self.position.Y)
 		self.element.BackgroundColor3 = self.color
 		self.element.BackgroundTransparency = self.filled and 0 or 1
-		if self.border then
+		-- A hollow Square (Filled=false) is meant to read as an outline, but an empty
+		-- Frame draws nothing in the GUI fallback -- which is why the 2D box never
+		-- rendered. Lazily attach a UIStroke and trace the box in its own colour. (B2)
+		if not self.filled then
+			if not self.border then
+				self.border = Instance.new("UIStroke")
+				self.border.Parent = self.element
+			end
+			self.border.Color = self.color
+			self.border.Thickness = math.max(1, self.thickness or 1)
+			self.border.Enabled = true
+		elseif self.border then
 			self.border.Color = self.outlineColor
 			self.border.Thickness = self.thickness
 		end
@@ -719,7 +730,7 @@ local statusGroupbox = mainTab:AddRightGroupbox("Status")
 -- immediately after CreateWindow -- that error aborted the rest of the script,
 -- so the window appeared empty and no notification ever fired.
 local suppressMasterNotify = true
-local masterToggle = hitboxGroupbox:AddToggle("MasterToggle", { Text = "Master Toggle", Default = true, Tooltip = "Master on/off switch for the entire script" }):OnChanged(function()
+local masterToggle = hitboxGroupbox:AddToggle("MasterToggle", { Text = "Master Toggle", Default = true, Tooltip = "Master on/off switch for the entire script. (Default: ON)" }):OnChanged(function()
 	if Toggles.MasterToggle.Value then
 		getgenv().FurryHBELoaded = true
 		updatePlayers()
@@ -737,7 +748,7 @@ suppressMasterNotify = false
 registerUIElement("MasterToggle", masterToggle)
 
 -- Hitbox Settings
-local extenderToggle = hitboxGroupbox:AddToggle("extenderToggled", { Text = "Enable Hitbox Extender", Default = false, Tooltip = "Toggle hitbox extension on/off" }):OnChanged(function()
+local extenderToggle = hitboxGroupbox:AddToggle("extenderToggled", { Text = "Enable Hitbox Extender", Default = false, Tooltip = "Toggle hitbox extension on/off. (Default: OFF)" }):OnChanged(function()
 	if Toggles.extenderToggled.Value then
 		updatePlayers()
 	else
@@ -747,8 +758,8 @@ local extenderToggle = hitboxGroupbox:AddToggle("extenderToggled", { Text = "Ena
 	end
 end)
 registerUIElement("extenderToggled", extenderToggle)
-hitboxGroupbox:AddSlider("extenderSize", { Text = "Hitbox Size", Min = 2, Max = 100, Default = 10, Rounding = 1, Tooltip = "Base size for hitbox extension" }):OnChanged(updatePlayers)
-hitboxGroupbox:AddDropdown("hitboxShape", { Text = "Hitbox Shape", AllowNull = false, Multi = false, Values = { "Cube", "Flat (disk)", "Tall (pillar)" }, Default = "Cube", Tooltip = "Cube = uniform; Flat = wide & short; Tall = narrow & tall" }):OnChanged(updatePlayers)
+hitboxGroupbox:AddSlider("extenderSize", { Text = "Hitbox Size", Min = 2, Max = 100, Default = 10, Rounding = 1, Tooltip = "Base size for hitbox extension. (Default: 10)" }):OnChanged(updatePlayers)
+hitboxGroupbox:AddDropdown("hitboxShape", { Text = "Hitbox Shape", AllowNull = false, Multi = false, Values = { "Cube", "Flat (disk)", "Tall (pillar)" }, Default = "Cube", Tooltip = "Cube = uniform; Flat = wide & short;\nTall = narrow & tall. (Default: Cube)" }):OnChanged(updatePlayers)
 
 -- Part Scanner
 local partScannerToggled = false
@@ -771,7 +782,7 @@ partScannerFillCircle.Color = Color3.fromRGB(0, 255, 0)
 partScannerFillCircle.Filled = true
 partScannerFillCircle.Visible = false
 
-local partScannerButton = hitboxGroupbox:AddToggle("partScannerToggled", { Text = "Part Scanner Mode", Default = false, Tooltip = "Click and HOLD on a part to add it. Hold again on a scanned part to remove it." }):OnChanged(function(value)
+local partScannerButton = hitboxGroupbox:AddToggle("partScannerToggled", { Text = "Part Scanner Mode", Default = false, Tooltip = "Click and HOLD on a part to add it.\nHold again on a scanned part to remove it.\n(Default: OFF)" }):OnChanged(function(value)
 	partScannerToggled = value
 	partScannerHolding = false
 	partScannerProgress = 0
@@ -789,7 +800,7 @@ local partScannerButton = hitboxGroupbox:AddToggle("partScannerToggled", { Text 
 		Library:Notify("Part Scanner Mode disabled")
 	end
 end)
-hitboxGroupbox:AddToggle("partScannerAllowWorld", { Text = "Allow World Parts", Default = false, Tooltip = "Let the scanner pick up non-character parts (ground, walls, vehicles). Off = only character/humanoid parts." })
+hitboxGroupbox:AddToggle("partScannerAllowWorld", { Text = "Allow World Parts", Default = false, Tooltip = "Let the scanner pick up non-character parts\n(ground, walls, vehicles). Off = only\ncharacter/humanoid parts. (Default: OFF)" })
 hitboxGroupbox:AddButton("Clear Scanned Parts", function()
 	-- Snapshot first; removeBodyPart mutates the Values list as it goes.
 	local toRemove = {}
@@ -805,68 +816,70 @@ hitboxGroupbox:AddButton("Clear Scanned Parts", function()
 	Library:Notify("Cleared " .. #toRemove .. " scanned part(s)")
 end):AddToolTip("Remove every part added via the Part Scanner (keeps the default body parts)")
 hitboxGroupbox:AddSlider("extenderTransparency", { Text = "Transparency", Min = 0, Max = 1, Default = 0.5, Rounding = 2, Tooltip = "Transparency of extended hitboxes (0 = visible, 1 = invisible). (Default: 0.5)" }):OnChanged(updatePlayers)
-hitboxGroupbox:AddToggle("outlineMode", { Text = "Outline Only", Default = false, Tooltip = "Hide the enlarged hitbox block and show only a coloured wireframe outline at the hitbox size (the part is still extended for hit-reg). (Default: OFF)" }):OnChanged(updatePlayers)
+hitboxGroupbox:AddToggle("outlineMode", { Text = "Outline Only", Default = false, Tooltip = "Leave the body looking normal and put the enlarged hit\narea on a SEPARATE invisible part, drawn as a clean outline\nin your outline colour (shaped like the expanded part).\nThe hit area still works for hit-reg.\n(Default: OFF)" }):OnChanged(updatePlayers)
 hitboxGroupbox:AddLabel("Outline Color"):AddColorPicker("outlineColor", { Title = "Outline Color", Default = Color3.fromRGB(255, 0, 0) })
 hitboxGroupbox:AddSlider("outlineTransparency", { Text = "Outline Transparency", Min = 0, Max = 1, Default = 0, Rounding = 2, Tooltip = "Transparency of the outline lines (0 = solid). (Default: 0)" }):OnChanged(updatePlayers)
-hitboxGroupbox:AddInput("customPartName", { Text = "Custom Part Name", Default = "HeadHB", Tooltip = "Name for custom body part matching" }):OnChanged(updatePlayers)
-hitboxGroupbox:AddDropdown("extenderPartList", { Text = "Body Parts", AllowNull = true, Multi = true, Values = table.clone(DEFAULT_BODY_PARTS), Default = "HumanoidRootPart", Tooltip = "Select which body parts to extend" }):OnChanged(updatePlayers)
+hitboxGroupbox:AddInput("customPartName", { Text = "Custom Part Name", Default = "HeadHB", Tooltip = "Name for custom body part matching. (Default: HeadHB)" }):OnChanged(updatePlayers)
+hitboxGroupbox:AddDropdown("extenderPartList", { Text = "Body Parts", AllowNull = true, Multi = true, Values = table.clone(DEFAULT_BODY_PARTS), Default = "Head", Tooltip = "Select which body parts to extend. (Default: Head)" }):OnChanged(updatePlayers)
 
 -- Part-specific sizing
-hitboxGroupbox:AddToggle("partSpecificSizing", { Text = "Part-Specific Sizing", Default = false, Tooltip = "Enable different sizes for different body parts" }):OnChanged(updatePlayers)
-hitboxGroupbox:AddSlider("headSize", { Text = "Head Size", Min = 2, Max = 100, Default = 10, Rounding = 1, Tooltip = "Size for head hitbox" }):OnChanged(updatePlayers)
-hitboxGroupbox:AddSlider("torsoSize", { Text = "Torso Size", Min = 2, Max = 100, Default = 10, Rounding = 1, Tooltip = "Size for torso hitbox" }):OnChanged(updatePlayers)
-hitboxGroupbox:AddSlider("limbSize", { Text = "Limb Size", Min = 2, Max = 100, Default = 8, Rounding = 1, Tooltip = "Size for arm/leg hitboxes" }):OnChanged(updatePlayers)
+hitboxGroupbox:AddToggle("partSpecificSizing", { Text = "Part-Specific Sizing", Default = false, Tooltip = "Enable different sizes for different body parts. (Default: OFF)" }):OnChanged(updatePlayers)
+hitboxGroupbox:AddSlider("headSize", { Text = "Head Size", Min = 2, Max = 100, Default = 10, Rounding = 1, Tooltip = "Size for head hitbox. (Default: 10)" }):OnChanged(updatePlayers)
+hitboxGroupbox:AddSlider("torsoSize", { Text = "Torso Size", Min = 2, Max = 100, Default = 10, Rounding = 1, Tooltip = "Size for torso hitbox. (Default: 10)" }):OnChanged(updatePlayers)
+hitboxGroupbox:AddSlider("limbSize", { Text = "Limb Size", Min = 2, Max = 100, Default = 8, Rounding = 1, Tooltip = "Size for arm/leg hitboxes. (Default: 8)" }):OnChanged(updatePlayers)
 
 -- Dynamic sizing
-hitboxGroupbox:AddToggle("dynamicSizing", { Text = "Dynamic Sizing", Default = false, Tooltip = "Scale hitbox based on distance to target" }):OnChanged(updatePlayers)
-hitboxGroupbox:AddSlider("dynamicScalingFactor", { Text = "Scaling Factor", Min = 0.1, Max = 2, Default = 1, Rounding = 2, Tooltip = "How much to scale based on distance" }):OnChanged(updatePlayers)
+hitboxGroupbox:AddToggle("dynamicSizing", { Text = "Dynamic Sizing", Default = false, Tooltip = "Scale hitbox based on distance to target. (Default: OFF)" }):OnChanged(updatePlayers)
+hitboxGroupbox:AddSlider("dynamicScalingFactor", { Text = "Scaling Factor", Min = 0.1, Max = 2, Default = 1, Rounding = 2, Tooltip = "How much to scale based on distance. (Default: 1)" }):OnChanged(updatePlayers)
 
 -- Smooth transitions
-hitboxGroupbox:AddToggle("smoothTransitions", { Text = "Smooth Transitions", Default = false, Tooltip = "Interpolate size changes smoothly" }):OnChanged(updatePlayers)
-hitboxGroupbox:AddSlider("transitionSpeed", { Text = "Transition Speed", Min = 0.1, Max = 2, Default = 0.5, Rounding = 2, Tooltip = "Speed of size interpolation" }):OnChanged(updatePlayers)
+hitboxGroupbox:AddToggle("smoothTransitions", { Text = "Smooth Transitions", Default = false, Tooltip = "Interpolate size changes smoothly. (Default: OFF)" }):OnChanged(updatePlayers)
+hitboxGroupbox:AddSlider("transitionSpeed", { Text = "Transition Speed", Min = 0.1, Max = 2, Default = 0.5, Rounding = 2, Tooltip = "Speed of size interpolation. (Default: 0.5)" }):OnChanged(updatePlayers)
 
 -- Filter Settings
-filterGroupbox:AddSlider("maxDistance", { Text = "Max Distance", Min = 0, Max = 1000, Default = 1000, Rounding = 1, Tooltip = "Maximum distance to extend/ESP players (0 = unlimited)" }):OnChanged(updatePlayers)
-filterGroupbox:AddToggle("closestTargetsOnly", { Text = "Closest Targets Only", Default = false, Tooltip = "Only extend the nearest N players (more legit + better performance)" }):OnChanged(updatePlayers)
-filterGroupbox:AddSlider("maxTargets", { Text = "Max Targets", Min = 1, Max = 10, Default = 1, Rounding = 0, Tooltip = "How many of the nearest players to extend when Closest Targets Only is on" }):OnChanged(updatePlayers)
-filterGroupbox:AddToggle("fovFilterToggled", { Text = "FOV Filter", Default = false, Tooltip = "Only target players within FOV circle" }):OnChanged(updatePlayers)
-filterGroupbox:AddSlider("fovSize", { Text = "FOV Size", Min = 10, Max = 500, Default = 100, Rounding = 1, Tooltip = "Radius of FOV circle" }):OnChanged(updatePlayers)
+filterGroupbox:AddSlider("maxDistance", { Text = "Max Distance", Min = 0, Max = 1000, Default = 1000, Rounding = 1, Tooltip = "Maximum distance to extend/ESP players (0 = unlimited). (Default: 1000)" }):OnChanged(updatePlayers)
+filterGroupbox:AddToggle("closestTargetsOnly", { Text = "Closest Targets Only", Default = false, Tooltip = "Only extend the nearest N players\n(more legit + better performance). (Default: OFF)" }):OnChanged(updatePlayers)
+filterGroupbox:AddSlider("maxTargets", { Text = "Max Targets", Min = 1, Max = 10, Default = 1, Rounding = 0, Tooltip = "How many of the nearest players to extend\nwhen Closest Targets Only is on. (Default: 1)" }):OnChanged(updatePlayers)
+filterGroupbox:AddToggle("fovFilterToggled", { Text = "FOV Filter", Default = false, Tooltip = "Only target players within FOV circle. (Default: OFF)" }):OnChanged(updatePlayers)
+filterGroupbox:AddSlider("fovSize", { Text = "FOV Size", Min = 10, Max = 500, Default = 100, Rounding = 1, Tooltip = "Radius of FOV circle. (Default: 100)" }):OnChanged(updatePlayers)
 filterGroupbox:AddLabel("FOV Color"):AddColorPicker("fovColor", { Title = "FOV Color", Default = Color3.fromRGB(255, 255, 255) })
 Options.fovColor:OnChanged(updatePlayers)
-filterGroupbox:AddSlider("fovThickness", { Text = "FOV Thickness", Min = 1, Max = 5, Default = 1, Rounding = 1, Tooltip = "Thickness of FOV circle" }):OnChanged(updatePlayers)
-filterGroupbox:AddToggle("autoExpandFOV", { Text = "Auto-Expand in FOV", Default = false, Tooltip = "Automatically expand hitbox when target is in FOV" }):OnChanged(updatePlayers)
-filterGroupbox:AddToggle("weaponFilterToggled", { Text = "Weapon Filter", Default = false, Tooltip = "Ignore players holding specific weapons" }):OnChanged(updatePlayers)
+filterGroupbox:AddSlider("fovThickness", { Text = "FOV Thickness", Min = 1, Max = 5, Default = 1, Rounding = 1, Tooltip = "Thickness of FOV circle. (Default: 1)" }):OnChanged(updatePlayers)
+filterGroupbox:AddToggle("autoExpandFOV", { Text = "Auto-Expand in FOV", Default = false, Tooltip = "Automatically expand hitbox when target is in FOV. (Default: OFF)" }):OnChanged(updatePlayers)
+filterGroupbox:AddToggle("weaponFilterToggled", { Text = "Weapon Filter", Default = false, Tooltip = "Ignore players holding specific weapons. (Default: OFF)" }):OnChanged(updatePlayers)
 filterGroupbox:AddButton("Extract Weapons", function()
 	local weapons = extractWeapons()
 	Options.weaponList.Values = weapons
 	Options.weaponList:SetValues()
 	Library:Notify("Extracted " .. #weapons .. " weapons")
 end):AddToolTip("Extract all weapons from the game")
-filterGroupbox:AddDropdown("weaponList", { Text = "Ignored Weapons", AllowNull = true, Multi = true, Values = {}, Tooltip = "Select weapons to ignore" }):OnChanged(updatePlayers)
+filterGroupbox:AddDropdown("weaponList", { Text = "Ignored Weapons", AllowNull = true, Multi = true, Values = {}, Tooltip = "Select weapons to ignore. (Default: none)" }):OnChanged(updatePlayers)
 
 -- Anti-Detection
-antiDetectionGroupbox:AddToggle("randomizationToggled", { Text = "Randomization", Default = false, Tooltip = "Add slight randomization to hitbox sizes" }):OnChanged(updatePlayers)
+antiDetectionGroupbox:AddToggle("randomizationToggled", { Text = "Randomization", Default = false, Tooltip = "Add slight randomization to hitbox sizes. (Default: OFF)" }):OnChanged(updatePlayers)
 antiDetectionGroupbox:AddSlider("randomizationAmount", { Text = "Random Amount", Min = 0, Max = 5, Default = 1, Rounding = 1, Tooltip = "Maximum random size variation. (Default: 1)" }):OnChanged(updatePlayers)
-antiDetectionGroupbox:AddToggle("smartJitter", { Text = "Smart Jitter (sine)", Default = false, Tooltip = "Use a smooth sine wave for the size jitter instead of random snapping (harder to fingerprint). (Default: OFF)" }):OnChanged(updatePlayers)
-antiDetectionGroupbox:AddSlider("maxPlausibleMult", { Text = "Max Plausible x", Min = 0, Max = 50, Default = 0, Rounding = 1, Tooltip = "Cap the hitbox at this multiple of the part's real size. 0 = no cap. Keeps extension believable. (Default: 0)" }):OnChanged(updatePlayers)
-antiDetectionGroupbox:AddToggle("humanizationToggled", { Text = "Humanization Delay", Default = false, Tooltip = "Add delay between target switches" }):OnChanged(updatePlayers)
-antiDetectionGroupbox:AddSlider("humanizationDelay", { Text = "Delay (ms)", Min = 0, Max = 1000, Default = 100, Rounding = 1, Tooltip = "Delay in milliseconds between target switches" }):OnChanged(updatePlayers)
-antiDetectionGroupbox:AddToggle("legitModeToggled", { Text = "Legit Mode", Default = false, Tooltip = "Only extend when crosshair is near target" }):OnChanged(updatePlayers)
-antiDetectionGroupbox:AddSlider("legitModeFOV", { Text = "Legit FOV", Min = 1, Max = 50, Default = 10, Rounding = 1, Tooltip = "FOV threshold for legit mode" }):OnChanged(updatePlayers)
-antiDetectionGroupbox:AddToggle("autoOffWhenDead", { Text = "Auto-Off When Dead", Default = false, Tooltip = "Automatically stop extending while you are dead or spectating" }):OnChanged(updatePlayers)
+antiDetectionGroupbox:AddToggle("smartJitter", { Text = "Smart Jitter (sine)", Default = false, Tooltip = "Use a smooth sine wave for the size jitter instead of\nrandom snapping (harder to fingerprint). (Default: OFF)" }):OnChanged(updatePlayers)
+antiDetectionGroupbox:AddSlider("maxPlausibleMult", { Text = "Max Plausible x", Min = 0, Max = 50, Default = 0, Rounding = 1, Tooltip = "Cap the hitbox at this multiple of the part's real size.\n0 = no cap. Keeps extension believable. (Default: 0)" }):OnChanged(updatePlayers)
+antiDetectionGroupbox:AddToggle("humanizationToggled", { Text = "Humanization Delay", Default = false, Tooltip = "Add delay between target switches. (Default: OFF)" }):OnChanged(updatePlayers)
+antiDetectionGroupbox:AddSlider("humanizationDelay", { Text = "Delay (ms)", Min = 0, Max = 1000, Default = 100, Rounding = 1, Tooltip = "Delay in milliseconds between target switches. (Default: 100)" }):OnChanged(updatePlayers)
+antiDetectionGroupbox:AddToggle("legitModeToggled", { Text = "Legit Mode", Default = false, Tooltip = "Only extend when crosshair is near target. (Default: OFF)" }):OnChanged(updatePlayers)
+antiDetectionGroupbox:AddSlider("legitModeFOV", { Text = "Legit FOV", Min = 1, Max = 50, Default = 10, Rounding = 1, Tooltip = "FOV threshold for legit mode. (Default: 10)" }):OnChanged(updatePlayers)
+antiDetectionGroupbox:AddToggle("autoOffWhenDead", { Text = "Auto-Off When Dead", Default = false, Tooltip = "Automatically stop extending while you are dead or spectating. (Default: OFF)" }):OnChanged(updatePlayers)
 antiDetectionGroupbox:AddToggle("seatDisableHBE", { Text = "Disable While Seated", Default = true, Tooltip = "Stop extending hitboxes while YOU sit in any seat (car/turret/etc).\nPrevents the in-vehicle freeze where players & cars look stuck.\nResumes automatically when you get out. (Default: ON)" }):OnChanged(updatePlayers)
-antiDetectionGroupbox:AddToggle("seatRadiusMode", { Text = "Seated: Nearby Only", Default = false, Tooltip = "When seated, only disable hitboxes for players within the radius below instead of everyone" }):OnChanged(updatePlayers)
-antiDetectionGroupbox:AddSlider("seatRadius", { Text = "Seated Radius (studs)", Min = 5, Max = 200, Default = 30, Rounding = 1, Tooltip = "Radius used by 'Seated: Nearby Only'" }):OnChanged(updatePlayers)
+antiDetectionGroupbox:AddToggle("seatRadiusMode", { Text = "Seated: Nearby Only", Default = false, Tooltip = "When seated, only disable hitboxes for players\nwithin the radius below instead of everyone. (Default: OFF)" }):OnChanged(updatePlayers)
+antiDetectionGroupbox:AddSlider("seatRadius", { Text = "Seated Radius (studs)", Min = 5, Max = 200, Default = 30, Rounding = 1, Tooltip = "Radius used by 'Seated: Nearby Only'. (Default: 30)" }):OnChanged(updatePlayers)
 
 -- Ignores
-ignoresGroupbox:AddToggle("extenderSitCheck", { Text = "Ignore Sitting Players", Default = false, Tooltip = "Don't extend players who are sitting" }):OnChanged(updatePlayers)
-ignoresGroupbox:AddToggle("extenderFFCheck", { Text = "Ignore Forcefielded Players", Default = false, Tooltip = "Don't extend players with forcefields" }):OnChanged(updatePlayers)
-ignoresGroupbox:AddToggle("ignoreSelectedPlayersToggled", { Text = "Ignore Selected Players", Default = false, Tooltip = "Don't extend selected players" }):OnChanged(updatePlayers)
-ignoresGroupbox:AddDropdown("ignorePlayerList", { Text = "Players", AllowNull = true, Multi = true, Values = {}, Tooltip = "Select players to ignore" }):OnChanged(updatePlayers)
-ignoresGroupbox:AddToggle("ignoreOwnTeamToggled", { Text = "Ignore Own Team", Default = false, Tooltip = "Don't extend teammates" }):OnChanged(updatePlayers)
-ignoresGroupbox:AddToggle("ignoreSelectedTeamsToggled", { Text = "Ignore Selected Teams", Default = false, Tooltip = "Don't extend selected teams" }):OnChanged(updatePlayers)
-ignoresGroupbox:AddDropdown("ignoreTeamList", { Text = "Teams", AllowNull = true, Multi = true, Values = {}, Tooltip = "Select teams to ignore" }):OnChanged(updatePlayers)
-ignoresGroupbox:AddToggle("collisionsToggled", { Text = "Enable Collisions", Default = false, Tooltip = "Keep collisions on extended hitboxes" }):OnChanged(updatePlayers)
+ignoresGroupbox:AddToggle("extenderSitCheck", { Text = "Ignore Sitting Players", Default = false, Tooltip = "Don't extend players who are sitting. (Default: OFF)" }):OnChanged(updatePlayers)
+ignoresGroupbox:AddToggle("seatExitDelayEnabled", { Text = "Sitting Grace After Exit", Default = false, Tooltip = "After YOU leave a seat/car, keep hitboxes OFF for players who are\nstill sitting for the delay below, so you don't insta-hit someone\nmid-stand. Whitelisted players are unaffected (already ignored).\n(Default: OFF)" }):OnChanged(updatePlayers)
+ignoresGroupbox:AddSlider("seatExitDelay", { Text = "Sitting Grace (sec)", Min = 1, Max = 15, Default = 6, Rounding = 1, Tooltip = "How long after you exit a seat to keep still-seated players un-extended. (Default: 6)" })
+ignoresGroupbox:AddToggle("extenderFFCheck", { Text = "Ignore Forcefielded Players", Default = false, Tooltip = "Don't extend players with forcefields. (Default: OFF)" }):OnChanged(updatePlayers)
+ignoresGroupbox:AddToggle("ignoreSelectedPlayersToggled", { Text = "Ignore Selected Players", Default = false, Tooltip = "Don't extend selected players. (Default: OFF)" }):OnChanged(updatePlayers)
+ignoresGroupbox:AddDropdown("ignorePlayerList", { Text = "Players", AllowNull = true, Multi = true, Values = {}, Tooltip = "Select players to ignore. (Default: none)" }):OnChanged(updatePlayers)
+ignoresGroupbox:AddToggle("ignoreOwnTeamToggled", { Text = "Ignore Own Team", Default = false, Tooltip = "Don't extend teammates. (Default: OFF)" }):OnChanged(updatePlayers)
+ignoresGroupbox:AddToggle("ignoreSelectedTeamsToggled", { Text = "Ignore Selected Teams", Default = false, Tooltip = "Don't extend selected teams. (Default: OFF)" }):OnChanged(updatePlayers)
+ignoresGroupbox:AddDropdown("ignoreTeamList", { Text = "Teams", AllowNull = true, Multi = true, Values = {}, Tooltip = "Select teams to ignore. (Default: none)" }):OnChanged(updatePlayers)
+ignoresGroupbox:AddToggle("collisionsToggled", { Text = "Enable Collisions", Default = false, Tooltip = "Keep collisions on extended hitboxes. (Default: OFF)" }):OnChanged(updatePlayers)
 
 -- Status
 local statusActiveLabel = statusGroupbox:AddLabel("Active Players: 0")
@@ -883,49 +896,49 @@ local espAdvancedGroupbox = espTab:AddRightGroupbox("Advanced ESP")
 local espFilterGroupbox = espTab:AddRightGroupbox("ESP Filters")
 
 -- Name ESP
-local espNameToggle = espNameGroupbox:AddToggle("espNameToggled", { Text = "Enable Name ESP", Default = false, Tooltip = "Show player names" }):AddColorPicker("espNameColor1", { Title = "Fill Color", Default = Color3.fromRGB(255, 255, 255) }):AddColorPicker("espNameColor2", { Title = "Outline Color", Default = Color3.fromRGB(0, 0, 0) })
+local espNameToggle = espNameGroupbox:AddToggle("espNameToggled", { Text = "Enable Name ESP", Default = false, Tooltip = "Show player names. (Default: OFF)" }):AddColorPicker("espNameColor1", { Title = "Fill Color", Default = Color3.fromRGB(255, 255, 255) }):AddColorPicker("espNameColor2", { Title = "Outline Color", Default = Color3.fromRGB(0, 0, 0) })
 registerUIElement("espNameToggled", espNameToggle)
 Toggles.espNameToggled:OnChanged(updatePlayers)
 Options.espNameColor1:OnChanged(updatePlayers)
 Options.espNameColor2:OnChanged(updatePlayers)
-espNameGroupbox:AddToggle("espNameUseTeamColor", { Text = "Use Team Color", Default = false, Tooltip = "Use team color for name ESP" }):OnChanged(updatePlayers)
+espNameGroupbox:AddToggle("espNameUseTeamColor", { Text = "Use Team Color", Default = false, Tooltip = "Use team color for name ESP. (Default: OFF)" }):OnChanged(updatePlayers)
 espNameGroupbox:AddDropdown("espNameType", { Text = "Name Type", AllowNull = false, Multi = false, Values = { "Display Name", "Account Name", "Both (Display + @User)" }, Default = "Display Name", Tooltip = "Which name to show.\nBoth = DisplayName (@AccountName). (Default: Display Name)" }):OnChanged(updatePlayers)
-espNameGroupbox:AddToggle("espDistanceToggled", { Text = "Show Distance", Default = false, Tooltip = "Show distance to player" }):OnChanged(updatePlayers)
-espNameGroupbox:AddToggle("espTeamToggled", { Text = "Show Team Name", Default = false, Tooltip = "Show a tiny team-name subscript below the player's name" }):OnChanged(updatePlayers)
-espNameGroupbox:AddSlider("espNameSize", { Text = "Name Text Size", Min = 8, Max = 36, Default = 14, Rounding = 0, Tooltip = "Font size of ESP names. Smaller = far less overlap when players clump together." })
+espNameGroupbox:AddToggle("espDistanceToggled", { Text = "Show Distance", Default = false, Tooltip = "Show distance to player. (Default: OFF)" }):OnChanged(updatePlayers)
+espNameGroupbox:AddToggle("espTeamToggled", { Text = "Show Team Name", Default = false, Tooltip = "Show a tiny team-name subscript below the player's name. (Default: OFF)" }):OnChanged(updatePlayers)
+espNameGroupbox:AddSlider("espNameSize", { Text = "Name Text Size", Min = 8, Max = 36, Default = 14, Rounding = 0, Tooltip = "Font size of ESP names. Smaller = far less\noverlap when players clump together. (Default: 14)" })
 
 -- Chams
-local espChamsToggle = espChamsGroupbox:AddToggle("espHighlightToggled", { Text = "Enable Chams", Default = false, Tooltip = "Show player highlights" }):AddColorPicker("espHighlightColor1", { Title = "Fill Color", Default = Color3.fromRGB(0, 0, 0) }):AddColorPicker("espHighlightColor2", { Title = "Outline Color", Default = Color3.fromRGB(0, 0, 0) })
+local espChamsToggle = espChamsGroupbox:AddToggle("espHighlightToggled", { Text = "Enable Chams", Default = false, Tooltip = "Show player highlights. (Default: OFF)" }):AddColorPicker("espHighlightColor1", { Title = "Fill Color", Default = Color3.fromRGB(0, 0, 0) }):AddColorPicker("espHighlightColor2", { Title = "Outline Color", Default = Color3.fromRGB(0, 0, 0) })
 registerUIElement("espHighlightToggled", espChamsToggle)
 Toggles.espHighlightToggled:OnChanged(updatePlayers)
 Options.espHighlightColor1:OnChanged(updatePlayers)
 Options.espHighlightColor2:OnChanged(updatePlayers)
-espChamsGroupbox:AddToggle("espHighlightUseTeamColor", { Text = "Use Team Color", Default = false, Tooltip = "Use team color for chams" }):OnChanged(updatePlayers)
-espChamsGroupbox:AddDropdown("espHighlightDepthMode", { Text = "Depth Mode", AllowNull = false, Multi = false, Values = { "Occluded", "AlwaysOnTop" }, Default = "Occluded", Tooltip = "How chams render through walls" }):OnChanged(updatePlayers)
-espChamsGroupbox:AddSlider("espHighlightFillTransparency", { Text = "Fill Transparency", Min = 0, Max = 1, Default = 0.5, Rounding = 2, Tooltip = "Transparency of chams fill" }):OnChanged(updatePlayers)
-espChamsGroupbox:AddSlider("espHighlightOutlineTransparency", { Text = "Outline Transparency", Min = 0, Max = 1, Default = 0, Rounding = 2, Tooltip = "Transparency of chams outline" }):OnChanged(updatePlayers)
+espChamsGroupbox:AddToggle("espHighlightUseTeamColor", { Text = "Use Team Color", Default = false, Tooltip = "Use team color for chams. (Default: OFF)" }):OnChanged(updatePlayers)
+espChamsGroupbox:AddDropdown("espHighlightDepthMode", { Text = "Depth Mode", AllowNull = false, Multi = false, Values = { "Occluded", "AlwaysOnTop" }, Default = "Occluded", Tooltip = "How chams render through walls. (Default: Occluded)" }):OnChanged(updatePlayers)
+espChamsGroupbox:AddSlider("espHighlightFillTransparency", { Text = "Fill Transparency", Min = 0, Max = 1, Default = 0.5, Rounding = 2, Tooltip = "Transparency of chams fill. (Default: 0.5)" }):OnChanged(updatePlayers)
+espChamsGroupbox:AddSlider("espHighlightOutlineTransparency", { Text = "Outline Transparency", Min = 0, Max = 1, Default = 0, Rounding = 2, Tooltip = "Transparency of chams outline. (Default: 0)" }):OnChanged(updatePlayers)
 espChamsGroupbox:AddToggle("espChamsGlow", { Text = "Glow Pulse", Default = false, Tooltip = "Animate the chams outline so it pulses/glows. (Default: OFF)" })
 
 -- Advanced ESP
-espAdvancedGroupbox:AddToggle("espHealthBarToggled", { Text = "Health Bar", Default = false, Tooltip = "Show health bar above player" }):OnChanged(updatePlayers)
-espAdvancedGroupbox:AddToggle("espHealthTextToggled", { Text = "Health Text", Default = false, Tooltip = "Show numeric health next to the health bar" }):OnChanged(updatePlayers)
-espAdvancedGroupbox:AddToggle("espBoxToggled", { Text = "2D Box", Default = false, Tooltip = "Show 2D box around player" }):OnChanged(updatePlayers)
-espAdvancedGroupbox:AddSlider("espBoxScale", { Text = "2D Box Size", Min = 0.3, Max = 1.5, Default = 0.85, Rounding = 2, Tooltip = "Scale of the 2D box. Lower = tighter boxes that overlap less when players bunch up." })
-espAdvancedGroupbox:AddToggle("espAntiOverlap", { Text = "Anti-Overlap Names", Default = true, Tooltip = "Nudge ESP names apart when players clump together so they don't render on top of each other." })
-espAdvancedGroupbox:AddToggle("espRainbow", { Text = "Rainbow ESP", Default = false, Tooltip = "Cycle every player's ESP (name/box/tracer/skeleton/chams) through a rainbow. (Default: OFF)" })
+espAdvancedGroupbox:AddToggle("espHealthBarToggled", { Text = "Health Bar", Default = false, Tooltip = "Show health bar above player. (Default: OFF)" }):OnChanged(updatePlayers)
+espAdvancedGroupbox:AddToggle("espHealthTextToggled", { Text = "Health Text", Default = false, Tooltip = "Show numeric health next to the health bar. (Default: OFF)" }):OnChanged(updatePlayers)
+espAdvancedGroupbox:AddToggle("espBoxToggled", { Text = "2D Box", Default = false, Tooltip = "Show 2D box around player. (Default: OFF)" }):OnChanged(updatePlayers)
+espAdvancedGroupbox:AddSlider("espBoxScale", { Text = "2D Box Size", Min = 0.3, Max = 1.5, Default = 0.85, Rounding = 2, Tooltip = "Scale of the 2D box. Lower = tighter boxes\nthat overlap less when players bunch up. (Default: 0.85)" })
+espAdvancedGroupbox:AddToggle("espAntiOverlap", { Text = "Anti-Overlap Names", Default = true, Tooltip = "Nudge ESP names apart when players clump\ntogether so they don't render on top of each other.\n(Default: ON)" })
+espAdvancedGroupbox:AddToggle("espRainbow", { Text = "Rainbow ESP", Default = false, Tooltip = "Cycle every player's ESP (name/box/tracer/skeleton/chams)\nthrough a rainbow. (Default: OFF)" })
 espAdvancedGroupbox:AddSlider("espRainbowSpeed", { Text = "Rainbow Speed", Min = 0.1, Max = 3, Default = 0.7, Rounding = 2, Tooltip = "How fast the rainbow cycles. (Default: 0.7)" })
 espAdvancedGroupbox:AddSlider("espThickness", { Text = "Line Thickness", Min = 1, Max = 5, Default = 1, Rounding = 1, Tooltip = "Thickness of box/tracer/skeleton lines. (Default: 1)" })
-espAdvancedGroupbox:AddToggle("espDistanceFade", { Text = "Distance Fade", Default = false, Tooltip = "Fade ESP out as players get farther away (relative to ESP Max Distance). Native Drawing only. (Default: OFF)" })
-espAdvancedGroupbox:AddSlider("espOverlapGap", { Text = "Overlap Spacing", Min = 8, Max = 40, Default = 16, Rounding = 0, Tooltip = "Vertical pixels enforced between names by Anti-Overlap." })
-espAdvancedGroupbox:AddToggle("espSkeletonToggled", { Text = "Skeleton ESP", Default = false, Tooltip = "Draw lines between the character's bones" }):OnChanged(updatePlayers)
-espAdvancedGroupbox:AddToggle("espOffscreenToggled", { Text = "Off-Screen Markers", Default = false, Tooltip = "Show an edge marker pointing toward off-screen players" }):OnChanged(updatePlayers)
-espAdvancedGroupbox:AddToggle("espTracerToggled", { Text = "Tracer Lines", Default = false, Tooltip = "Show lines from screen center to players" }):OnChanged(updatePlayers)
+espAdvancedGroupbox:AddToggle("espDistanceFade", { Text = "Distance Fade", Default = false, Tooltip = "Fade ESP out as players get farther away (relative to\nESP Max Distance). Native Drawing only. (Default: OFF)" })
+espAdvancedGroupbox:AddSlider("espOverlapGap", { Text = "Overlap Spacing", Min = 8, Max = 40, Default = 16, Rounding = 0, Tooltip = "Vertical pixels enforced between names by Anti-Overlap. (Default: 16)" })
+espAdvancedGroupbox:AddToggle("espSkeletonToggled", { Text = "Skeleton ESP", Default = false, Tooltip = "Draw lines between the character's bones. (Default: OFF)" }):OnChanged(updatePlayers)
+espAdvancedGroupbox:AddToggle("espOffscreenToggled", { Text = "Off-Screen Markers", Default = false, Tooltip = "Show an edge marker pointing toward off-screen players. (Default: OFF)" }):OnChanged(updatePlayers)
+espAdvancedGroupbox:AddToggle("espTracerToggled", { Text = "Tracer Lines", Default = false, Tooltip = "Show lines from screen center to players. (Default: OFF)" }):OnChanged(updatePlayers)
 espAdvancedGroupbox:AddLabel("Tracer Color"):AddColorPicker("espTracerColor", { Title = "Tracer Color", Default = Color3.fromRGB(255, 0, 0) })
 Options.espTracerColor:OnChanged(updatePlayers)
 
 -- ESP Filters
-espFilterGroupbox:AddSlider("espMaxDistance", { Text = "Max Distance", Min = 0, Max = 1000, Default = 1000, Rounding = 1, Tooltip = "Maximum distance for ESP (0 = unlimited)" }):OnChanged(updatePlayers)
-espFilterGroupbox:AddToggle("espFOVFilter", { Text = "FOV Filter", Default = false, Tooltip = "Only ESP players within FOV" }):OnChanged(updatePlayers)
+espFilterGroupbox:AddSlider("espMaxDistance", { Text = "Max Distance", Min = 0, Max = 1000, Default = 1000, Rounding = 1, Tooltip = "Maximum distance for ESP (0 = unlimited). (Default: 1000)" }):OnChanged(updatePlayers)
+espFilterGroupbox:AddToggle("espFOVFilter", { Text = "FOV Filter", Default = false, Tooltip = "Only ESP players within FOV. (Default: OFF)" }):OnChanged(updatePlayers)
 
 -- Whitelist Tab
 local whitelistTab = mainWindow:AddTab("Whitelist")
@@ -949,7 +962,7 @@ whitelistGroupbox:AddButton("Refresh Player Lists", function()
 	end
 	Library:Notify("Player lists refreshed (" .. added .. " entries added)")
 end):AddToolTip("Re-sync the whitelist / priority / ignore dropdowns with everyone currently in the server")
-whitelistGroupbox:AddDropdown("whitelistPlayerList", { Text = "Whitelisted Players", AllowNull = true, Multi = true, Values = {}, Tooltip = "Players whitelisted from HBE" }):OnChanged(updatePlayers)
+whitelistGroupbox:AddDropdown("whitelistPlayerList", { Text = "Whitelisted Players", AllowNull = true, Multi = true, Values = {}, Tooltip = "Players whitelisted from HBE. (Default: none)" }):OnChanged(updatePlayers)
 whitelistGroupbox:AddToggle("espWhitelisted", { Text = "Keep ESP on Whitelisted", Default = true, Tooltip = "Whitelisted players keep their ESP; only their hitbox extension is skipped.\n(Default: ON)" })
 local whitelistCountLabel = whitelistGroupbox:AddLabel("Whitelisted: 0")
 
@@ -983,9 +996,9 @@ applyWhitelist()
 Options.whitelistPlayerList:OnChanged(saveWhitelist)
 Players.PlayerAdded:Connect(function() task.wait(0.25); pcall(applyWhitelist) end)
 
-priorityGroupbox:AddToggle("prioritySystemToggled", { Text = "Enable Priority System", Default = false, Tooltip = "Always extend/ESP priority players" }):OnChanged(updatePlayers)
-priorityGroupbox:AddDropdown("priorityPlayerList", { Text = "Priority Players", AllowNull = true, Multi = true, Values = {}, Tooltip = "High priority players" }):OnChanged(updatePlayers)
-priorityGroupbox:AddToggle("priorityFlash", { Text = "Flash Priority Targets", Default = true, Tooltip = "Rainbow-flash every ESP element (name, box, tracer, skeleton, chams, off-screen marker) of priority players so they stand out" })
+priorityGroupbox:AddToggle("prioritySystemToggled", { Text = "Enable Priority System", Default = false, Tooltip = "Always extend/ESP priority players. (Default: OFF)" }):OnChanged(updatePlayers)
+priorityGroupbox:AddDropdown("priorityPlayerList", { Text = "Priority Players", AllowNull = true, Multi = true, Values = {}, Tooltip = "High priority players. (Default: none)" }):OnChanged(updatePlayers)
+priorityGroupbox:AddToggle("priorityFlash", { Text = "Flash Priority Targets", Default = true, Tooltip = "Rainbow-flash every ESP element (name, box, tracer,\nskeleton, chams, off-screen marker) of priority players\nso they stand out. (Default: ON)" })
 local priorityCountLabel = priorityGroupbox:AddLabel("Priority: 0")
 
 -- Profiles Tab
@@ -1038,7 +1051,7 @@ local profiles = {
 	}
 }
 
-profilesGroupbox:AddDropdown("profileSelect", { Text = "Select Profile", AllowNull = false, Multi = false, Values = {"Aggressive", "Stealth", "Legit", "Drilling"}, Default = "Aggressive", Tooltip = "Select a configuration profile" })
+profilesGroupbox:AddDropdown("profileSelect", { Text = "Select Profile", AllowNull = false, Multi = false, Values = {"Aggressive", "Stealth", "Legit", "Drilling"}, Default = "Aggressive", Tooltip = "Select a configuration profile. (Default: Aggressive)" })
 profilesGroupbox:AddButton("Load Profile", function()
 	local profileName = Options.profileSelect.Value
 	local profile = profiles[profileName]
@@ -1189,7 +1202,9 @@ Library.ToggleKeybind = Options.menuKeybind
 
 -- Performance settings
 local performanceGroupbox = mainTab:AddRightGroupbox("Performance")
-performanceGroupbox:AddSlider("updateRate", { Text = "Update Rate (Hz)", Min = 1, Max = 60, Default = 30, Rounding = 1, Tooltip = "How often to update hitboxes (higher = more responsive but more CPU)" }):OnChanged(updatePlayers)
+performanceGroupbox:AddSlider("updateRate", { Text = "Update Rate (Hz)", Min = 1, Max = 60, Default = 30, Rounding = 1, Tooltip = "How often to update hitboxes\n(higher = more responsive but more CPU). (Default: 30)" }):OnChanged(updatePlayers)
+performanceGroupbox:AddToggle("perfAdaptive", { Text = "Low-FPS Adaptive Throttle", Default = false, Tooltip = "When FPS drops below the floor below, automatically do\nless work -- redraw ESP on fewer frames and skip far-away\nplayers -- to claw back frames. Eases off again once\nFPS recovers. (Default: OFF)" })
+performanceGroupbox:AddSlider("perfFpsFloor", { Text = "FPS Floor", Min = 15, Max = 120, Default = 45, Rounding = 0, Tooltip = "Throttling kicks in when measured FPS falls below this;\nthe further below, the harder it throttles. (Default: 45)" })
 
 -- Menu transparency: blend every menu background toward invisible so the window
 -- stops blocking your view. Input is unaffected -- transparency does NOT stop
@@ -1220,7 +1235,7 @@ local function applyMenuTransparency(alpha)
 		end)
 	end
 end
-performanceGroupbox:AddSlider("menuTransparency", { Text = "Menu Transparency", Min = 0, Max = 0.9, Default = 0, Rounding = 2, Tooltip = "See-through menu so it doesn't block your view. You can still click everything." }):OnChanged(function()
+performanceGroupbox:AddSlider("menuTransparency", { Text = "Menu Transparency", Min = 0, Max = 0.9, Default = 0, Rounding = 2, Tooltip = "See-through menu so it doesn't block your view.\nYou can still click everything. (Default: 0)" }):OnChanged(function()
 	applyMenuTransparency(Options.menuTransparency.Value)
 end)
 
@@ -1345,12 +1360,15 @@ function runUpdatePlayers()
 		end
 
 		activeExtensions = 0
-		for _, v in pairs(players) do
-			task.spawn(function()
-				pcall(function()
-					v:Update()
+		for plr, v in pairs(players) do
+			-- Low-FPS throttle: skip players past the distance cap. (F9)
+			if not (Bridge.Perf and Bridge.Perf.skipPlayer and Bridge.Perf.skipPlayer(plr)) then
+				task.spawn(function()
+					pcall(function()
+						v:Update()
+					end)
 				end)
-			end)
+			end
 		end
 	end)
 	
@@ -1445,9 +1463,14 @@ local function resolveEspOverlap()
 		local cur = slots[i]
 		for j = 1, i - 1 do
 			local prev = slots[j]
+			-- Separate by at least the upper label's text height. A fixed 16px gap is
+			-- smaller than a large name (size up to 36), so clumped names used to
+			-- overlap into one unreadable blob -- looking like the name "disappeared"
+			-- while the smaller team subscript below stayed legible. (B1)
+			local needed = math.max(gap, (prev.size or 14) + 2)
 			-- Only declutter labels that share roughly the same column.
-			if math.abs(cur.x - prev.x) < 70 and (cur.y - prev.y) < gap then
-				cur.y = prev.y + gap
+			if math.abs(cur.x - prev.x) < 70 and (cur.y - prev.y) < needed then
+				cur.y = prev.y + needed
 			end
 		end
 		cur.label.Position = Vector2.new(cur.x, cur.y)
@@ -1458,6 +1481,8 @@ end
 -- Render step for ESP (with failsafe)
 RunService:BindToRenderStep("furryWalls", Enum.RenderPriority.Camera.Value - 1, function()
 	if not getgenv().FurryHBELoaded then return end
+	-- Low-FPS throttle: skip some ESP redraws when frames are scarce. (F9)
+	if Bridge.Perf and Bridge.Perf.gateESP and Bridge.Perf.gateESP() then return end
 	Camera = Workspace.CurrentCamera
 	pcall(updateFOVCircle)
 	if #espNameSlots > 0 then table.clear(espNameSlots) end
@@ -1868,7 +1893,18 @@ function addPlayer(player)
 
 	local function isSitting()
 		local humanoid = playerChar:FindFirstChildWhichIsA("Humanoid")
-		return Toggles.extenderSitCheck.Value and humanoid ~= nil and humanoid.Sit == true
+		local sittingNow = humanoid ~= nil and humanoid.Sit == true
+		if Toggles.extenderSitCheck.Value and sittingNow then return true end
+		-- Sitting grace after exit: for a short window after YOU leave a seat, keep HBE
+		-- off for players who are still seated so you don't insta-hit someone mid-stand.
+		-- Whitelisted players are already excluded by isIgnored(), so the whitelist is
+		-- respected automatically. (F7)
+		if sittingNow and Toggles.seatExitDelayEnabled and Toggles.seatExitDelayEnabled.Value then
+			local t = Bridge.lastSeatExitTime
+			local delay = (Options.seatExitDelay and Options.seatExitDelay.Value) or 6
+			if t and (tick() - t) < delay then return true end
+		end
+		return false
 	end
 
 	local function isFFed()
@@ -2115,31 +2151,67 @@ function addPlayer(player)
 
 			-- Streamer Mode forces the enlarged hitbox fully transparent.
 			local extTransparency = Bridge.Streamer.hideHitbox and 1 or Options.extenderTransparency.Value
-			-- Outline Mode: keep the hitbox enlarged (for hit-reg) but make the block
-			-- invisible and draw a coloured wireframe instead, so the body isn't hidden
-			-- behind a big transparent box.
-			local outline = part:FindFirstChild("FurryHBE_Outline")
-			if Toggles.outlineMode and Toggles.outlineMode.Value then
-				extTransparency = 1
-				if not outline then
-					outline = Instance.new("SelectionBox")
-					outline.Name = "FurryHBE_Outline"
-					outline.Adornee = part
-					outline.LineThickness = 0.03
-					outline.SurfaceTransparency = 1
-					outline.Parent = part
-				end
-				outline.Color3 = (Options.outlineColor and Options.outlineColor.Value) or Color3.fromRGB(255, 0, 0)
-				outline.Transparency = (Options.outlineTransparency and Options.outlineTransparency.Value) or 0
-			elseif outline then
-				outline:Destroy()
-			end
-			part.Transparency = extTransparency
+			local d = defaultProperties[part]
+			-- Drop the legacy SelectionBox outline from older builds if present.
+			local oldSel = part:FindFirstChild("FurryHBE_Outline")
+			if oldSel then oldSel:Destroy() end
 
-			if part.Name == "Head" then
-				local face = part:FindFirstChild("face")
-				if face then
-					face.Transparency = extTransparency
+			if Toggles.outlineMode and Toggles.outlineMode.Value then
+				-- Outline Only (reworked, F6): leave the REAL part in its original visible
+				-- state and move the enlarged hit area onto a SEPARATE invisible part
+				-- welded to it, outlined by a Highlight -- a clean outline shaped like the
+				-- expanded part, instead of hiding the body behind a big transparent box.
+				part.Size = d.Size
+				part.Transparency = d.Transparency
+				part.Massless = d.Massless
+				part.CanCollide = d.CanCollide
+				currentSizes[part] = d.Size
+				if part.Name == "Head" then
+					local face = part:FindFirstChild("face")
+					if face then face.Transparency = d.Transparency end
+				end
+
+				local proxy = part:FindFirstChild("FurryHBE_HitProxy")
+				if not proxy then
+					proxy = Instance.new("Part")
+					proxy.Name = "FurryHBE_HitProxy"
+					proxy.Transparency = 1
+					proxy.Massless = true
+					proxy.CanCollide = false
+					proxy.CanTouch = true
+					proxy.CanQuery = true
+					proxy.Anchored = false
+					proxy.Size = targetSize
+					proxy.CFrame = part.CFrame
+					proxy.Parent = part
+					local weld = Instance.new("WeldConstraint")
+					weld.Part0 = part
+					weld.Part1 = proxy
+					weld.Parent = proxy
+					local hl = Instance.new("Highlight")
+					hl.Name = "FurryHBE_OutlineHL"
+					hl.Adornee = proxy
+					hl.FillTransparency = 1
+					hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+					hl.Parent = proxy
+				end
+				proxy.Size = targetSize
+				proxy.CanCollide = Toggles.collisionsToggled.Value
+				local hl = proxy:FindFirstChild("FurryHBE_OutlineHL")
+				if hl then
+					hl.OutlineColor = (Options.outlineColor and Options.outlineColor.Value) or Color3.fromRGB(255, 0, 0)
+					hl.OutlineTransparency = (Options.outlineTransparency and Options.outlineTransparency.Value) or 0
+					hl.FillTransparency = 1
+				end
+			else
+				-- Normal extend: drop any outline proxy; the real part stays enlarged
+				-- (sized/Massless/CanCollide already applied above).
+				local proxy = part:FindFirstChild("FurryHBE_HitProxy")
+				if proxy then proxy:Destroy() end
+				part.Transparency = extTransparency
+				if part.Name == "Head" then
+					local face = part:FindFirstChild("face")
+					if face then face.Transparency = extTransparency end
 				end
 			end
 		else
@@ -2151,6 +2223,8 @@ function addPlayer(player)
 			currentSizes[part] = d.Size
 			local ob = part:FindFirstChild("FurryHBE_Outline")
 			if ob then ob:Destroy() end
+			local px = part:FindFirstChild("FurryHBE_HitProxy")
+			if px then px:Destroy() end
 
 			if part.Name == "Head" then
 				local face = part:FindFirstChild("face")
@@ -2194,6 +2268,8 @@ function addPlayer(player)
 						appliedProps[v] = { Size = d.Size, Transparency = d.Transparency, CanCollide = d.CanCollide, Massless = d.Massless }
 					local ob = v:FindFirstChild("FurryHBE_Outline")
 					if ob then ob:Destroy() end
+					local px = v:FindFirstChild("FurryHBE_HitProxy")
+					if px then px:Destroy() end
 					if v.Name == "Head" then
 						local face = v:FindFirstChild("face")
 						if face then
@@ -2464,10 +2540,13 @@ function addPlayer(player)
 				-- tightens it further.
 				if Toggles.espBoxToggled.Value then
 					local rootPart = playerChar:FindFirstChild("HumanoidRootPart") or target
-					local head = playerChar:FindFirstChild("Head")
 					if rootPart then
 						local rootPos = rootPart.Position
-						local topPos = (head and head.Position or rootPos) + Vector3.new(0, 0.5, 0)
+						-- Root-relative + FIXED world offsets only: never reference the Head,
+						-- whose centre shifts when the hitbox extender enlarges it and used to
+						-- inflate the box. This keeps the 2D box a constant person-size
+						-- regardless of hitbox size. (B3)
+						local topPos = rootPos + Vector3.new(0, 2.5, 0)
 						local botPos = rootPos - Vector3.new(0, 3, 0)
 						local topV = WorldToViewportPoint(Camera, topPos)
 						local botV = WorldToViewportPoint(Camera, botPos)
@@ -2853,6 +2932,64 @@ RunService.Heartbeat:Connect(function()
 	pcall(updateWorldParts)
 end)
 
+-- ===== [F7] Sitting grace-after-exit tracker =====
+-- Record the moment YOU leave a seat so the HBE eligibility check (isSitting) can
+-- keep still-seated players un-extended for a short grace window (set in Ignores).
+pcall(function()
+	local wasSeated = false
+	RunService.Heartbeat:Connect(function()
+		local seated = false
+		pcall(function() seated = isLocalSeated() end)
+		if wasSeated and not seated then Bridge.lastSeatExitTime = tick() end
+		wasSeated = seated
+	end)
+end)
+
+-- ===== [F9] Low-FPS adaptive throttle =====
+-- Measures FPS and, when it drops below the floor, tells the ESP/HBE hot loops to
+-- do less work via cheap gate functions (Bridge.Perf). If this block fails to load
+-- the gates are simply absent and both loops behave exactly as before.
+pcall(function()
+	Bridge.Perf = Bridge.Perf or {}
+	local P = Bridge.Perf
+	P.active, P.stride, P.distCap, P.fps = false, 1, nil, 60
+
+	local fps = 60
+	RunService.RenderStepped:Connect(function(dt)
+		if dt and dt > 0 then fps = fps * 0.9 + (1 / dt) * 0.1 end
+		P.fps = fps
+		if not (Toggles.perfAdaptive and Toggles.perfAdaptive.Value) then
+			P.active, P.stride, P.distCap = false, 1, nil
+			return
+		end
+		local floor = (Options.perfFpsFloor and Options.perfFpsFloor.Value) or 45
+		if fps >= floor then
+			P.active, P.stride, P.distCap = false, 1, nil
+		else
+			P.active = true
+			local deficit = math.clamp((floor - fps) / math.max(1, floor), 0, 1)
+			P.stride = math.clamp(1 + math.floor(deficit * 4 + 0.5), 1, 4)  -- redraw ESP every 1st-4th frame
+			P.distCap = math.clamp(400 - deficit * 320, 80, 400)            -- skip players past 80-400 studs
+		end
+	end)
+
+	-- ESP gate: true => skip this frame's 2D ESP redraw.
+	local f = 0
+	P.gateESP = function()
+		if not P.active or P.stride <= 1 then return false end
+		f = (f + 1) % 1000000
+		return (f % P.stride) ~= 0
+	end
+
+	-- HBE gate: true => this player is far enough to skip this pass.
+	P.skipPlayer = function(plr)
+		if not P.active or not P.distCap then return false end
+		local char = plr and plr.Character
+		if not char then return false end
+		return getDistanceToPlayer(char) > P.distCap
+	end
+end)
+
 -- Game-specific anticheat handling
 if game.PlaceId == 111311599 then
 	pcall(function()
@@ -2925,29 +3062,29 @@ pcall(function()
 	local debugGroup    = precisionTab:AddRightGroupbox("Info")
 	local cfgGroup      = precisionTab:AddRightGroupbox("Config")
 
-	hbeGroup:AddToggle("precisionEnabled", { Text = "Enable Precision HBE", Default = false, Tooltip = "Standalone single-target hitbox extender. Works even with the main Master Toggle off." })
-	hbeGroup:AddToggle("precisionExclusive", { Text = "Exclusive Mode", Default = false, Tooltip = "Also switch the main mass-extender OFF while Precision is active. (Claims already stop the two fighting over your target, so this is optional.)" })
-	hbeGroup:AddSlider("precisionHitboxSize", { Text = "Base Hitbox Size", Min = 2, Max = 100, Default = 12, Rounding = 1, Tooltip = "Base size applied to the target's parts (before dynamic scaling)" })
-	hbeGroup:AddSlider("precisionTransparency", { Text = "Transparency", Min = 0, Max = 1, Default = 0.6, Rounding = 2, Tooltip = "Transparency of the extended hitbox (0 = solid, 1 = invisible)" })
-	hbeGroup:AddDropdown("precisionShape", { Text = "Hitbox Shape", AllowNull = false, Multi = false, Values = { "Cube", "Flat (disk)", "Tall (pillar)" }, Default = "Cube", Tooltip = "Cube = uniform; Flat = wide & short; Tall = narrow & tall" })
-	hbeGroup:AddToggle("precisionCollisions", { Text = "Keep Collisions", Default = false, Tooltip = "Leave the extended part collidable (off = restore original CanCollide)" })
-	hbeGroup:AddToggle("precisionSmooth", { Text = "Smooth Transitions", Default = false, Tooltip = "Interpolate size changes instead of snapping" })
-	hbeGroup:AddSlider("precisionSmoothSpeed", { Text = "Smooth Speed", Min = 0.05, Max = 1, Default = 0.3, Rounding = 2, Tooltip = "How fast the size eases toward the target (1 = instant)" })
-	hbeGroup:AddDropdown("precisionParts", { Text = "Parts to Extend", AllowNull = true, Multi = true, Values = { "HumanoidRootPart", "Head", "Torso", "UpperTorso", "LowerTorso", "Left Arm", "Right Arm", "Left Leg", "Right Leg" }, Default = "HumanoidRootPart", Tooltip = "Which of the target's parts to extend" })
+	hbeGroup:AddToggle("precisionEnabled", { Text = "Enable Precision HBE", Default = false, Tooltip = "Standalone single-target hitbox extender.\nWorks even with the main Master Toggle off. (Default: OFF)" })
+	hbeGroup:AddToggle("precisionExclusive", { Text = "Exclusive Mode", Default = false, Tooltip = "Also switch the main mass-extender OFF while\nPrecision is active. (Claims already stop the two\nfighting over your target, so this is optional.) (Default: OFF)" })
+	hbeGroup:AddSlider("precisionHitboxSize", { Text = "Base Hitbox Size", Min = 2, Max = 100, Default = 12, Rounding = 1, Tooltip = "Base size applied to the target's parts (before dynamic scaling). (Default: 12)" })
+	hbeGroup:AddSlider("precisionTransparency", { Text = "Transparency", Min = 0, Max = 1, Default = 0.6, Rounding = 2, Tooltip = "Transparency of the extended hitbox (0 = solid, 1 = invisible). (Default: 0.6)" })
+	hbeGroup:AddDropdown("precisionShape", { Text = "Hitbox Shape", AllowNull = false, Multi = false, Values = { "Cube", "Flat (disk)", "Tall (pillar)" }, Default = "Cube", Tooltip = "Cube = uniform; Flat = wide & short;\nTall = narrow & tall. (Default: Cube)" })
+	hbeGroup:AddToggle("precisionCollisions", { Text = "Keep Collisions", Default = false, Tooltip = "Leave the extended part collidable (off = restore original CanCollide). (Default: OFF)" })
+	hbeGroup:AddToggle("precisionSmooth", { Text = "Smooth Transitions", Default = false, Tooltip = "Interpolate size changes instead of snapping. (Default: OFF)" })
+	hbeGroup:AddSlider("precisionSmoothSpeed", { Text = "Smooth Speed", Min = 0.05, Max = 1, Default = 0.3, Rounding = 2, Tooltip = "How fast the size eases toward the target (1 = instant). (Default: 0.3)" })
+	hbeGroup:AddDropdown("precisionParts", { Text = "Parts to Extend", AllowNull = true, Multi = true, Values = { "HumanoidRootPart", "Head", "Torso", "UpperTorso", "LowerTorso", "Left Arm", "Right Arm", "Left Leg", "Right Leg" }, Default = "HumanoidRootPart", Tooltip = "Which of the target's parts to extend. (Default: HumanoidRootPart)" })
 
-	targetGroup:AddToggle("autoSelectTarget", { Text = "Auto-Select Target", Default = true, Tooltip = "Automatically lock onto the nearest visible player" })
-	targetGroup:AddSlider("selectionRadius", { Text = "Selection Radius (studs)", Min = 5, Max = 1000, Default = 150, Rounding = 1, Tooltip = "Max distance for auto-selection" })
+	targetGroup:AddToggle("autoSelectTarget", { Text = "Auto-Select Target", Default = true, Tooltip = "Automatically lock onto the nearest visible player. (Default: ON)" })
+	targetGroup:AddSlider("selectionRadius", { Text = "Selection Radius (studs)", Min = 5, Max = 1000, Default = 150, Rounding = 1, Tooltip = "Max distance for auto-selection. (Default: 150)" })
 	targetGroup:AddLabel("Manual Target"):AddKeyPicker("targetKeybind", { Default = "T", NoUI = true, Text = "Cycle Target" })
 
-	antiGroup:AddToggle("precisionRespectWhitelist", { Text = "Respect Whitelist", Default = true, Tooltip = "Never target players on the main script's whitelist" })
-	antiGroup:AddToggle("precisionIgnoreTeam", { Text = "Ignore Teammates", Default = false, Tooltip = "Skip players on your team (Team / TeamColor based)" })
-	antiGroup:AddToggle("precisionAutoOffDead", { Text = "Auto-Off When Dead", Default = true, Tooltip = "Stop extending while you are dead or have no character" })
-	antiGroup:AddToggle("precisionFOVGate", { Text = "FOV Gate", Default = false, Tooltip = "Only extend when the target is within the FOV radius of your crosshair" })
+	antiGroup:AddToggle("precisionRespectWhitelist", { Text = "Respect Whitelist", Default = true, Tooltip = "Never target players on the main script's whitelist. (Default: ON)" })
+	antiGroup:AddToggle("precisionIgnoreTeam", { Text = "Ignore Teammates", Default = false, Tooltip = "Skip players on your team (Team / TeamColor based). (Default: OFF)" })
+	antiGroup:AddToggle("precisionAutoOffDead", { Text = "Auto-Off When Dead", Default = true, Tooltip = "Stop extending while you are dead or have no character. (Default: ON)" })
+	antiGroup:AddToggle("precisionFOVGate", { Text = "FOV Gate", Default = false, Tooltip = "Only extend when the target is within the\nFOV radius of your crosshair. (Default: OFF)" })
 	antiGroup:AddSlider("precisionFOVRadius", { Text = "FOV Radius (px)", Min = 20, Max = 600, Default = 150, Rounding = 0 })
-	antiGroup:AddToggle("precisionRandomize", { Text = "Randomize Size", Default = false, Tooltip = "Add slight per-frame jitter to the hitbox size" })
+	antiGroup:AddToggle("precisionRandomize", { Text = "Randomize Size", Default = false, Tooltip = "Add slight per-frame jitter to the hitbox size. (Default: OFF)" })
 	antiGroup:AddSlider("precisionRandomAmount", { Text = "Random Amount", Min = 0, Max = 5, Default = 1, Rounding = 1 })
 
-	scalingGroup:AddToggle("dynamicScalingEnabled", { Text = "Dynamic Distance Scaling", Default = true, Tooltip = "Scale the hitbox between Close and Far factors based on distance" })
+	scalingGroup:AddToggle("dynamicScalingEnabled", { Text = "Dynamic Distance Scaling", Default = true, Tooltip = "Scale the hitbox between Close and Far factors based on distance. (Default: ON)" })
 	scalingGroup:AddSlider("scalingCloseFactor", { Text = "Close Range Factor", Min = 0.5, Max = 3.0, Default = 1.5, Rounding = 2 })
 	scalingGroup:AddSlider("scalingFarFactor", { Text = "Far Range Factor", Min = 0.1, Max = 3.0, Default = 0.6, Rounding = 2 })
 	scalingGroup:AddSlider("scalingThreshold", { Text = "Close/Far Threshold (studs)", Min = 10, Max = 300, Default = 60, Rounding = 1 })
@@ -3325,18 +3462,18 @@ pcall(function()
 	local panicGroup    = streamTab:AddRightGroupbox("Panic")
 	local miscGroup     = streamTab:AddRightGroupbox("Extra")
 
-	visualsGroup:AddToggle("streamerMaster", { Text = "Streamer Mode", Default = false, Tooltip = "Hide all visual indicators while keeping hitbox functionality active" })
+	visualsGroup:AddToggle("streamerMaster", { Text = "Streamer Mode", Default = false, Tooltip = "Hide all visual indicators while keeping hitbox functionality active. (Default: OFF)" })
 	visualsGroup:AddToggle("hideFOVCircle",  { Text = "Hide FOV Circle",  Default = true })
 	visualsGroup:AddToggle("hidePlayerESP",  { Text = "Hide Player ESP",  Default = true })
 	visualsGroup:AddToggle("hideChams",      { Text = "Hide Chams",       Default = true })
-	visualsGroup:AddToggle("hideHitboxGlow", { Text = "Hide Hitbox Glow", Default = true, Tooltip = "Force extended hitboxes fully transparent (without touching your Transparency slider)" })
+	visualsGroup:AddToggle("hideHitboxGlow", { Text = "Hide Hitbox Glow", Default = true, Tooltip = "Force extended hitboxes fully transparent\n(without touching your Transparency slider). (Default: ON)" })
 
-	uiGroup:AddToggle("hideUIOnToggle", { Text = "Hide UI with Streamer Mode", Default = false, Tooltip = "Also hide the HBE window itself whenever Streamer Mode is on" })
+	uiGroup:AddToggle("hideUIOnToggle", { Text = "Hide UI with Streamer Mode", Default = false, Tooltip = "Also hide the HBE window itself whenever Streamer Mode is on. (Default: OFF)" })
 	uiGroup:AddLabel("Hide/Show UI"):AddKeyPicker("hideUIKey", { Default = "F8", NoUI = true, Text = "Toggle UI visibility" })
 
 	panicGroup:AddLabel("Emergency Key"):AddKeyPicker("streamerPanicKey", { Default = "End", NoUI = true, Text = "Instant clean state" })
 
-	miscGroup:AddToggle("randomizeUpdateRate", { Text = "Jitter Update Rate", Default = false, Tooltip = "Add small random variation to the Update Rate (light anti-pattern; throttled)" })
+	miscGroup:AddToggle("randomizeUpdateRate", { Text = "Jitter Update Rate", Default = false, Tooltip = "Add small random variation to the Update Rate\n(light anti-pattern; throttled). (Default: OFF)" })
 
 	local menuVisible = true
 	local hiddenByStreamer = false
@@ -3437,11 +3574,11 @@ pcall(function()
 
 	local waypoints = {}
 
-	waypointGroup:AddDropdown("waypointList", { Text = "Saved Waypoints", AllowNull = true, Multi = false, Values = {}, Default = nil, Tooltip = "Select a waypoint to teleport to" })
+	waypointGroup:AddDropdown("waypointList", { Text = "Saved Waypoints", AllowNull = true, Multi = false, Values = {}, Default = nil, Tooltip = "Select a waypoint to teleport to. (Default: none)" })
 
-	settingsGroup:AddToggle("useSitTeleport", { Text = "Sit Before Teleport", Default = true, Tooltip = "Sit on a temporary seat first to mask the teleport as a normal move" })
-	settingsGroup:AddToggle("desyncFlash", { Text = "Desync Flash", Default = false, Tooltip = "Briefly flicker position to mask the teleport as network lag (can fling in some games)" })
-	settingsGroup:AddSlider("teleportSitTime", { Text = "Sit Settle Time", Min = 0.05, Max = 1, Default = 0.3, Rounding = 2, Tooltip = "How long to stay seated around the teleport" })
+	settingsGroup:AddToggle("useSitTeleport", { Text = "Sit Before Teleport", Default = true, Tooltip = "Sit on a temporary seat first to mask the teleport as a normal move. (Default: ON)" })
+	settingsGroup:AddToggle("desyncFlash", { Text = "Desync Flash", Default = false, Tooltip = "Briefly flicker position to mask the teleport as\nnetwork lag (can fling in some games). (Default: OFF)" })
+	settingsGroup:AddSlider("teleportSitTime", { Text = "Sit Settle Time", Min = 0.05, Max = 1, Default = 0.3, Rounding = 2, Tooltip = "How long to stay seated around the teleport. (Default: 0.3)" })
 
 	local activeTempSeats = {}
 
@@ -3557,7 +3694,7 @@ pcall(function()
 	end):AddToolTip("Teleport to the selected waypoint using the anti-detection method")
 
 	-- ===== Teleport to player =====
-	teleportGroup:AddDropdown("tpPlayerList", { Text = "Target Player", Values = {}, Multi = false, AllowNull = true, Tooltip = "Player to teleport to" })
+	teleportGroup:AddDropdown("tpPlayerList", { Text = "Target Player", Values = {}, Multi = false, AllowNull = true, Tooltip = "Player to teleport to. (Default: none)" })
 	local function refreshTpPlayers()
 		local names = {}
 		for _, p in ipairs(Players:GetPlayers()) do if p ~= lPlayer then table.insert(names, p.Name) end end
@@ -3640,7 +3777,7 @@ pcall(function()
 	-- 4 left + 4 right groupboxes, all under the single Miscellaneous tab.
 	local speedGroup     = miscTab:AddLeftGroupbox("Vehicle: Speed")
 	local detectGroup    = miscTab:AddLeftGroupbox("Vehicle: Detection")
-	local stabilGroup    = miscTab:AddLeftGroupbox("Vehicle: Limiter")
+	local stabilGroup    = miscTab:AddLeftGroupbox("Vehicle: Stability")
 	local expanderGroup  = miscTab:AddLeftGroupbox("Combat: Tool Expander")
 	local infoGroup      = miscTab:AddRightGroupbox("Vehicle: Info")
 	local weaponListGroup= miscTab:AddRightGroupbox("Combat: Weapon List")
@@ -3648,67 +3785,113 @@ pcall(function()
 	local settingsGroupC = miscTab:AddRightGroupbox("Combat: Settings")
 
 	-- Forward declarations: buttons below are created before these are defined.
-	local refreshVehicleDetection, applyToolExpansion
+	local refreshVehicleDetection, applyToolExpansion, detectSpeedSystem
 
 	-- Manual vehicle pick (fallback if auto seat-detection fails).
-	local manualVehicle = nil
+	local manualVehicle = nil       -- the part you clicked (primary fallback)
+	local manualVehicleModel = nil  -- the whole car that part belongs to (F4)
+
+	-- Reject obvious world/map geometry so a hold-pick can't register the ground. (F4)
+	local function looksLikeGround(part)
+		if not part then return true end
+		if part == Workspace.Terrain then return true end
+		local n = part.Name:lower()
+		if n:find("baseplate") or n:find("terrain") or n:find("ground") or n:find("floor") or n:find("map") then return true end
+		if part.Anchored and part.Size.X > 150 and part.Size.Z > 150 then return true end
+		return false
+	end
 
 	-- ===== Vehicle UI =====
-	speedGroup:AddToggle("vehicleAssist", { Text = "Vehicle Assist", Default = false, Tooltip = "Master toggle. Auto-stabilizes the vehicle (firmer at higher speed) and enables the speed jolt + limiter. (Default: OFF)" })
+	speedGroup:AddToggle("vehicleAssist", { Text = "Vehicle Assist", Default = false, Tooltip = "Master toggle. Enables the speed jolt + limiter. The\nauto-stabilizer (keep-upright + grip) is its OWN toggle\nunder Vehicle: Stability, so you can jolt/drive with no\nassist fighting the car. (Default: OFF)" })
 	speedGroup:AddLabel("Speed Jolt Key"):AddKeyPicker("vehicleJoltKey", { Default = "G", NoUI = true, Text = "Speed Jolt" })
-	speedGroup:AddSlider("vehicleJoltPower", { Text = "Jolt Power", Min = 10, Max = 500, Default = 120, Rounding = 1, Tooltip = "Burst of speed added each key press, in studs/sec. (Default: 120)" })
+	speedGroup:AddSlider("vehicleJoltPower", { Text = "Jolt Power", Min = 10, Max = 500, Default = 120, Rounding = 1, Tooltip = "Burst of speed per key press. Studs/sec normally, or a %\nof the car's own top speed if 'Jolt in car's units' is on.\n(Default: 120)" })
+	speedGroup:AddToggle("vehicleJoltRelative", { Text = "Jolt in car's units", Default = false, Tooltip = "Treat Jolt Power as a % of the car's OWN top speed\n(auto-detected from its VehicleSeat) so a jolt feels the\nsame on slow and fast cars. (Default: OFF)" })
+	speedGroup:AddToggle("vehicleTripleTap", { Text = "Triple-tap key = toggle Assist", Default = false, Tooltip = "Tap the Jolt key 3x quickly to flip Vehicle Assist on/off.\nThose 3 taps won't jolt. (Default: OFF)" })
 
-	detectGroup:AddDropdown("vehicleDetectionMode", { Text = "Detection Mode", Values = { "Auto", "A-Chassis", "Basic Seat", "Custom Script" }, Default = "Auto", Multi = false, AllowNull = false, Tooltip = "Hint for how to detect the vehicle (Auto works for most)" })
+	detectGroup:AddDropdown("vehicleDetectionMode", { Text = "Detection Mode", Values = { "Auto", "A-Chassis", "Basic Seat", "Custom Script" }, Default = "Auto", Multi = false, AllowNull = false, Tooltip = "Leave on Auto -- it detects A-Chassis / VehicleSeat /\ncustom cars for you and shows the result in Vehicle: Info.\nThe other options only force the label if Auto guesses\nwrong; they don't change how assist behaves. (Default: Auto)" })
 	detectGroup:AddButton("Refresh Detection", function()
 		if refreshVehicleDetection then pcall(refreshVehicleDetection) end
 	end):AddToolTip("Rescan your character for the seat/vehicle you're in")
-	detectGroup:AddToggle("vehicleManualMode", { Text = "Manual Vehicle", Default = false, Tooltip = "Ignore auto seat-detection and use the vehicle you pick below (use this if auto fails)" })
+	detectGroup:AddToggle("vehicleManualMode", { Text = "Manual Vehicle", Default = false, Tooltip = "Ignore auto seat-detection and use the vehicle\nyou pick below (use this if auto fails). (Default: OFF)" })
 	detectGroup:AddButton("Pick Vehicle (hold-click)", function()
 		Bridge:StartHoldPick({
 			color = Color3.fromRGB(0, 170, 255),
+			filter = function(part) return not looksLikeGround(part) end,
 			onPick = function(part)
+				if looksLikeGround(part) then Library:Notify("That looks like ground/map, not a vehicle"); return end
+				-- Register the WHOLE car: walk up to the top-most Model under Workspace,
+				-- so clicking any single part grabs the entire vehicle. (F4)
+				local model = part:FindFirstAncestorWhichIsA("Model")
+				local top = model
+				while top and top.Parent and top.Parent:IsA("Model") do top = top.Parent end
+				manualVehicleModel = top or model
 				manualVehicle = part
 				if not Toggles.vehicleManualMode.Value then Toggles.vehicleManualMode:SetValue(true) end
 				if refreshVehicleDetection then pcall(refreshVehicleDetection) end
-				local model = part:FindFirstAncestorWhichIsA("Model")
-				Library:Notify("Manual vehicle: " .. (model and model.Name or part.Name))
+				Library:Notify("Manual vehicle: " .. ((manualVehicleModel and manualVehicleModel.Name) or part.Name))
 			end,
 		})
-	end):AddToolTip("Aim at a vehicle and HOLD left-click until the ring fills to select it (right-click cancels)")
+	end):AddToolTip("Aim at ANY part of a car and HOLD left-click until the ring fills -- it registers the whole vehicle (ground/map parts are rejected). Right-click cancels.")
 	detectGroup:AddButton("Clear Manual Vehicle", function()
-		manualVehicle = nil
+		manualVehicle = nil; manualVehicleModel = nil
 		if refreshVehicleDetection then pcall(refreshVehicleDetection) end
 		Library:Notify("Manual vehicle cleared")
 	end):AddToolTip("Forget the manually picked vehicle")
 
-	stabilGroup:AddToggle("vehicleSpeedLimiter", { Text = "Speed Limiter", Default = false, Tooltip = "ON = caps your speed at the limit below even if you keep jolting. OFF = jolts uncapped (hit the jets). (Default: OFF)" })
+	stabilGroup:AddToggle("vehicleStabilizer", { Text = "Auto-Stabilizer", Default = true, Tooltip = "Keeps the car upright (anti-flip) and adds grip so it stops\nsliding around like it's on ice. Turn OFF for raw, unassisted\ndriving -- jolt + limiter still work. (Default: ON)" })
+	stabilGroup:AddSlider("vehicleGripStrength", { Text = "Grip (anti-slide)", Min = 0, Max = 100, Default = 55, Rounding = 0, Tooltip = "How hard sideways sliding is killed. Higher = planted/sticky,\nlower = driftier, 0 = no grip. Only active with the\nAuto-Stabilizer on. (Default: 55)" })
+	stabilGroup:AddToggle("vehicleSpeedLimiter", { Text = "Speed Limiter", Default = false, Tooltip = "ON = caps your speed at the limit below even if you keep\njolting. OFF = jolts uncapped (hit the jets). (Default: OFF)" })
 	stabilGroup:AddSlider("vehicleSpeedCap", { Text = "Speed Limit (studs/s)", Min = 20, Max = 500, Default = 120, Rounding = 1, Tooltip = "Max horizontal speed while the limiter is on. (Default: 120)" })
+	stabilGroup:AddButton("Match Car's Top Speed", function()
+		if refreshVehicleDetection then pcall(refreshVehicleDetection) end
+		if detectSpeedSystem then
+			local sys = detectSpeedSystem()
+			if sys and sys.maxSpeed and sys.maxSpeed > 0 then
+				Options.vehicleSpeedCap:SetValue(math.clamp(math.floor(sys.maxSpeed), 20, 500))
+				Library:Notify("Speed limit set to this car's top speed (" .. math.floor(sys.maxSpeed) .. ")")
+			else
+				Library:Notify("This car has no readable top speed (it's physics-driven)")
+			end
+		end
+	end):AddToolTip("Set the limiter to the car's own detected top speed, so the cap is in the car's units. (F2)")
 
 	local vehicleInfoLabel = infoGroup:AddLabel("Current Vehicle: None")
 
 	-- ===== Combat UI =====
-	weaponListGroup:AddDropdown("expandedWeapons", { Text = "Active Weapons", Values = {}, Multi = true, AllowNull = true, Default = {}, Tooltip = "Tools whose hitbox will be expanded" })
+	weaponListGroup:AddDropdown("expandedWeapons", { Text = "Active Weapons", Values = {}, Multi = true, AllowNull = true, Default = {}, Tooltip = "Tools whose hitbox will be expanded. (Default: none)" })
 
-	expanderGroup:AddToggle("toolExpanderEnabled", { Text = "Enable Tool Expander", Default = false, Tooltip = "Master toggle for tool hitbox expansion" })
-	expanderGroup:AddSlider("toolExpandSize", { Text = "Expansion Size", Min = 0.5, Max = 10, Default = 2, Rounding = 1, Tooltip = "Multiplier applied to tool part sizes" })
-	expanderGroup:AddDropdown("toolPartFilter", { Text = "Parts to Expand", Values = { "Handle", "Blade", "HitBox", "Tip", "All" }, Default = { "Handle", "Blade" }, Multi = true, AllowNull = true, Tooltip = "Which tool parts get expanded (name match)" })
+	expanderGroup:AddToggle("toolExpanderEnabled", { Text = "Enable Tool Expander", Default = false, Tooltip = "Master toggle for tool hitbox expansion. (Default: OFF)" })
+	expanderGroup:AddSlider("toolExpandSize", { Text = "Expansion Size", Min = 0.5, Max = 10, Default = 2, Rounding = 1, Tooltip = "Multiplier applied to tool part sizes. (Default: 2)" })
+	expanderGroup:AddDropdown("toolPartFilter", { Text = "Parts to Expand", Values = { "Handle", "Blade", "HitBox", "Tip", "All" }, Default = { "Handle", "Blade" }, Multi = true, AllowNull = true, Tooltip = "Which tool parts get expanded (name match). (Default: Handle, Blade)" })
 
 	scannerGroup:AddButton("Scan Tools", function()
-		local tools = {}
-		local function scan(container)
-			if not container then return end
-			for _, t in ipairs(container:GetChildren()) do
-				if t:IsA("Tool") and t.Name ~= "" and not table.find(tools, t.Name) then table.insert(tools, t.Name) end
+		-- Pure read-only scan: collects tool NAMES only, never touches a tool (no
+		-- resize/equip), and MERGES into the existing list instead of replacing it so
+		-- a rescan can't wipe your current weapon selection. Wrapped in pcall so a bad
+		-- container can't error out. (B4)
+		pcall(function()
+			local seen, tools = {}, {}
+			for _, n in ipairs(Options.expandedWeapons.Values or {}) do
+				if type(n) == "string" and not seen[n] then seen[n] = true; tools[#tools + 1] = n end
 			end
-		end
-		scan(lPlayer:FindFirstChild("Backpack"))
-		scan(lPlayer.Character)
-		Options.expandedWeapons.Values = tools
-		Options.expandedWeapons:SetValues()
-		Library:Notify("Found " .. #tools .. " tool(s)")
-	end):AddToolTip("Scan your backpack and character for tools")
+			local function scan(container)
+				if not container then return end
+				for _, t in ipairs(container:GetChildren()) do
+					if t:IsA("Tool") and t.Name ~= "" and not seen[t.Name] then
+						seen[t.Name] = true; tools[#tools + 1] = t.Name
+					end
+				end
+			end
+			scan(lPlayer:FindFirstChild("Backpack"))
+			scan(lPlayer.Character)
+			Options.expandedWeapons.Values = tools
+			Options.expandedWeapons:SetValues()
+			Library:Notify("Found " .. #tools .. " tool(s) -- scan only, nothing modified")
+		end)
+	end):AddToolTip("Read-only: lists tool names from your backpack/character and merges them into Active Weapons. Never resizes or equips anything.")
 
-	settingsGroupC:AddToggle("toolAutoApply", { Text = "Auto-Apply on Equip", Default = true, Tooltip = "Expand a tool automatically when equipped if it's in the active list" })
+	settingsGroupC:AddToggle("toolAutoApply", { Text = "Auto-Apply on Equip", Default = true, Tooltip = "Expand a tool automatically when equipped if it's in the active list. (Default: ON)" })
+	settingsGroupC:AddToggle("toolAutoScanEquip", { Text = "Auto-Add on Equip", Default = false, Tooltip = "When you equip a tool, automatically add it to the Active\nWeapons list AND expand it (if the expander is on) -- no\nmanual scanning needed. (Default: OFF)" })
 	settingsGroupC:AddButton("Apply Now", function()
 		if applyToolExpansion then pcall(applyToolExpansion) end
 	end):AddToolTip("Force-apply expansion to the currently equipped tool(s)")
@@ -3721,6 +3904,13 @@ pcall(function()
 		-- Manual override: if Manual Vehicle is on, use the part you picked so assist
 		-- still works when auto seat-detection fails.
 		if Toggles.vehicleManualMode and Toggles.vehicleManualMode.Value then
+			-- Prefer the whole picked car: hand back its primary part so assist acts on
+			-- the real chassis, not the single part you happened to click. (F4)
+			if manualVehicleModel and manualVehicleModel.Parent then
+				return manualVehicleModel.PrimaryPart
+					or (manualVehicle and manualVehicle.Parent and manualVehicle)
+					or manualVehicleModel:FindFirstChildWhichIsA("BasePart")
+			end
 			if manualVehicle and manualVehicle.Parent then return manualVehicle end
 			return nil
 		end
@@ -3743,6 +3933,23 @@ pcall(function()
 		local root = currentVehicle:FindFirstAncestorWhichIsA("Model") or currentVehicle
 		local primary = root.PrimaryPart or (currentVehicle:IsA("BasePart") and currentVehicle) or root:FindFirstChildWhichIsA("BasePart")
 		return root, primary
+	end
+
+	-- Best-effort read of the car's OWN speed system so jolt/limiter can work in its
+	-- units: a VehicleSeat exposes MaxSpeed/Throttle; A-Chassis/custom cars are
+	-- physics-driven so we just report that. (F2/F5)
+	detectSpeedSystem = function()
+		local root = vehicleRootAndPrimary()
+		if not root then return nil end
+		local seat = (currentVehicle and currentVehicle:IsA("VehicleSeat") and currentVehicle)
+			or root:FindFirstChildWhichIsA("VehicleSeat", true)
+		if seat then
+			return { kind = "VehicleSeat", maxSpeed = seat.MaxSpeed, throttle = seat.Throttle, seat = seat }
+		end
+		if root:FindFirstChild("A-Chassis") or root:FindFirstChild("Chassis") then
+			return { kind = "A-Chassis" }
+		end
+		return { kind = "Physics" }
 	end
 
 	-- Track the part we last attached a gyro to so we can clean it up the moment we
@@ -3768,31 +3975,59 @@ pcall(function()
 		return root, primary
 	end
 
-	-- One Heartbeat: auto-stabilize (torque scales with speed) + enforce the limiter.
-	local function assistStep()
+	-- One Heartbeat: optional auto-stabilizer (upright + grip) and the speed limiter.
+	-- The stabilizer is its own toggle, so jolt/limiter can run with no assist physics.
+	local lastInfoRefresh = 0
+	local function assistStep(dt)
 		if not Toggles.vehicleAssist.Value then clearGyro(); return end
 		local _, primary = ensureVehicle()
-		if not primary then return end
+		if not primary then clearGyro(); return end
+
+		-- Keep the Info readout current while you're driving (throttled). (F5)
+		if tick() - lastInfoRefresh > 0.5 then
+			lastInfoRefresh = tick()
+			if refreshVehicleDetection then pcall(refreshVehicleDetection) end
+		end
+
 		local vel = primary.AssemblyLinearVelocity
 		local speed = vel.Magnitude
 
-		-- Auto-stabilizer: keep upright, torque/responsiveness scaled to speed so it
-		-- self-adjusts no matter how fast you go. Roll+pitch only (yaw stays free) so
-		-- steering isn't fought.
-		local gyro = primary:FindFirstChild("FurryHBE_StabGyro")
-		if not gyro then
-			gyro = Instance.new("BodyGyro")
-			gyro.Name = "FurryHBE_StabGyro"
-			gyro.D = 500
-			gyro.Parent = primary
-		end
-		gyro.P = math.clamp(speed * 200, 2000, 30000)
-		local strength = math.clamp(800 + speed * 40, 800, 60000)
-		gyro.MaxTorque = Vector3.new(strength, 0, strength)
-		local _, yaw = primary.CFrame:ToEulerAnglesYXZ()
-		gyro.CFrame = CFrame.new(primary.Position) * CFrame.Angles(0, yaw, 0)
+		local stabilize = (Toggles.vehicleStabilizer == nil) or Toggles.vehicleStabilizer.Value
+		if stabilize then
+			-- Anti-flip: keep upright on roll+pitch ONLY (yaw stays free so steering
+			-- isn't fought). Softer, well-damped values than before so the car still
+			-- leans and turns like a car instead of wobbling/skating. (F1)
+			local gyro = primary:FindFirstChild("FurryHBE_StabGyro")
+			if not gyro then
+				gyro = Instance.new("BodyGyro")
+				gyro.Name = "FurryHBE_StabGyro"
+				gyro.Parent = primary
+			end
+			gyro.P = math.clamp(1500 + speed * 60, 1500, 9000)
+			gyro.D = 750
+			local torque = math.clamp(4000 + speed * 1200, 4000, 40000)
+			gyro.MaxTorque = Vector3.new(torque, 0, torque)
+			local _, yaw = primary.CFrame:ToEulerAnglesYXZ()
+			gyro.CFrame = CFrame.new(primary.Position) * CFrame.Angles(0, yaw, 0)
 
-		-- Speed limiter: clamp horizontal speed to the cap when enabled.
+			-- Grip (anti-ice): bleed off sideways velocity so the car stops skating,
+			-- while forward speed AND steering (yaw) stay untouched. Frame-rate
+			-- compensated so the feel is the same at any FPS. (F1)
+			local gripPct = ((Options.vehicleGripStrength and Options.vehicleGripStrength.Value) or 55) / 100
+			if gripPct > 0 and speed > 1 then
+				local right = primary.CFrame.RightVector
+				local lateral = right:Dot(vel)
+				local f = math.clamp(gripPct * ((dt or 1/60) * 60), 0, 1)
+				primary.AssemblyLinearVelocity = vel - right * (lateral * f)
+				vel = primary.AssemblyLinearVelocity
+			end
+		else
+			-- Stabilizer off: make sure no leftover gyro keeps fighting the car.
+			local g = primary:FindFirstChild("FurryHBE_StabGyro")
+			if g then g:Destroy() end
+		end
+
+		-- Speed limiter (runs under the master toggle, independent of the stabilizer).
 		if Toggles.vehicleSpeedLimiter.Value then
 			local cap = Options.vehicleSpeedCap.Value
 			local horiz = Vector3.new(vel.X, 0, vel.Z)
@@ -3807,10 +4042,20 @@ pcall(function()
 	-- so wheel physics on advanced chassis aren't fought/broken (the old tire bug).
 	-- The limiter clamps it next frame; with the limiter off it's a full "jet".
 	local function speedJolt()
+		-- Works whenever the master toggle is on -- the auto-stabilizer is NOT required. (F2)
 		if not Toggles.vehicleAssist.Value then return end
 		local _, primary = ensureVehicle()
 		if not primary then return end
-		local newVel = primary.AssemblyLinearVelocity + primary.CFrame.LookVector * Options.vehicleJoltPower.Value
+		local power = Options.vehicleJoltPower.Value
+		-- "In car's units" mode: Jolt Power is a % of the car's auto-detected top
+		-- speed, so one tap feels consistent across slow and fast vehicles. (F2)
+		if Toggles.vehicleJoltRelative and Toggles.vehicleJoltRelative.Value and detectSpeedSystem then
+			local sys = detectSpeedSystem()
+			if sys and sys.maxSpeed and sys.maxSpeed > 0 then
+				power = sys.maxSpeed * (Options.vehicleJoltPower.Value / 100)
+			end
+		end
+		local newVel = primary.AssemblyLinearVelocity + primary.CFrame.LookVector * power
 		-- Anti-fling: a single jolt can never produce an absurd velocity.
 		if newVel.Magnitude > 2000 then newVel = newVel.Unit * 2000 end
 		primary.AssemblyLinearVelocity = newVel
@@ -3818,15 +4063,48 @@ pcall(function()
 
 	refreshVehicleDetection = function()
 		currentVehicle = detectVehicle()
-		vehicleInfoLabel:SetText("Current Vehicle: " .. (currentVehicle and identifyVehicleType(currentVehicle) or "None"))
+		if not currentVehicle then
+			vehicleInfoLabel:SetText("Current Vehicle: None")
+			return
+		end
+		local root = currentVehicle:FindFirstAncestorWhichIsA("Model") or currentVehicle
+		local _, primary = vehicleRootAndPrimary()
+		local vtype = identifyVehicleType(currentVehicle)
+		local src = (Toggles.vehicleManualMode and Toggles.vehicleManualMode.Value) and "manual" or "auto"
+		local sys = detectSpeedSystem()
+		local speedTxt = "physics"
+		if sys then
+			if sys.kind == "VehicleSeat" then speedTxt = "Seat top " .. math.floor(sys.maxSpeed or 0)
+			else speedTxt = sys.kind end
+		end
+		vehicleInfoLabel:SetText(string.format("Vehicle: %s | %s (%s) | %s | part: %s",
+			root.Name or "?", vtype, src, speedTxt, primary and primary.Name or "?"))
 	end
 
-	Options.vehicleJoltKey:OnClick(function() pcall(speedJolt) end)
+	-- Triple-tap detection: 3 quick taps of the jolt key flip Vehicle Assist when the
+	-- option is on; otherwise every press just jolts. (F3)
+	local joltTapTimes = {}
+	Options.vehicleJoltKey:OnClick(function()
+		if Toggles.vehicleTripleTap and Toggles.vehicleTripleTap.Value then
+			local now = tick()
+			joltTapTimes[#joltTapTimes + 1] = now
+			while #joltTapTimes > 0 and now - joltTapTimes[1] > 0.6 do table.remove(joltTapTimes, 1) end
+			if #joltTapTimes >= 3 then
+				joltTapTimes = {}
+				pcall(function()
+					Toggles.vehicleAssist:SetValue(not Toggles.vehicleAssist.Value)
+					Library:Notify("Vehicle Assist " .. (Toggles.vehicleAssist.Value and "ON" or "OFF") .. " (triple-tap)")
+				end)
+				return
+			end
+		end
+		pcall(speedJolt)
+	end)
 
 	Toggles.vehicleAssist:OnChanged(function()
 		if Toggles.vehicleAssist.Value then
 			refreshVehicleDetection()
-			if not assistConn then assistConn = RunService.Heartbeat:Connect(function() pcall(assistStep) end) end
+			if not assistConn then assistConn = RunService.Heartbeat:Connect(function(dt) pcall(function() assistStep(dt) end) end) end
 		else
 			if assistConn then assistConn:Disconnect(); assistConn = nil end
 			removeVehiclePhysics()
@@ -3845,9 +4123,10 @@ pcall(function()
 		return false
 	end
 
-	local function expandTool(tool, expand)
+	local function expandTool(tool, expand, force)
 		if expand then
-			if not table.find(Options.expandedWeapons:GetActiveValues(), tool.Name) then return end
+			-- `force` skips the active-list gate (used by Auto-Add on Equip, F8).
+			if not force and not table.find(Options.expandedWeapons:GetActiveValues(), tool.Name) then return end
 			local scale = Options.toolExpandSize.Value
 			for _, part in ipairs(tool:GetDescendants()) do
 				if part:IsA("BasePart") and shouldExpandPart(part) then
@@ -3876,9 +4155,34 @@ pcall(function()
 		end
 	end
 
+	-- Add a tool name to Active Weapons (merge into the available values and tick it as
+	-- selected) so an auto-detected tool shows up and stays selectable later. (F8)
+	local function addToolToList(name)
+		if not name or name == "" then return end
+		local vals = Options.expandedWeapons.Values or {}
+		if not table.find(vals, name) then
+			table.insert(vals, name)
+			Options.expandedWeapons.Values = vals
+			Options.expandedWeapons:SetValues()
+		end
+		pcall(function()
+			local sel = Options.expandedWeapons.Value
+			if type(sel) == "table" and not sel[name] then
+				sel[name] = true
+				Options.expandedWeapons:SetValue(sel)
+			end
+		end)
+	end
+
 	local function hookTool(tool)
 		track(tool.Equipped:Connect(function()
-			if Toggles.toolExpanderEnabled.Value and Toggles.toolAutoApply.Value then expandTool(tool, true) end
+			-- Auto-Add on Equip: detect & handle the equipped tool with no manual scan. (F8)
+			if Toggles.toolAutoScanEquip and Toggles.toolAutoScanEquip.Value then
+				addToolToList(tool.Name)
+				if Toggles.toolExpanderEnabled.Value then expandTool(tool, true, true) end
+			elseif Toggles.toolExpanderEnabled.Value and Toggles.toolAutoApply.Value then
+				expandTool(tool, true)
+			end
 		end))
 		track(tool.Unequipped:Connect(function() expandTool(tool, false) end))
 	end
@@ -3932,11 +4236,11 @@ end)
 pcall(function()
 	local lPlayer = Players.LocalPlayer
 	local mvGroup = (Bridge.MiscTab or mainTab):AddRightGroupbox("Manual Vehicle HBE")
-	mvGroup:AddToggle("mvHbeEnabled", { Text = "Enable Manual Vehicle HBE", Default = false, Tooltip = "Extend the hitbox of a vehicle/part you pick manually (independent of every other extender)" })
-	mvGroup:AddSlider("mvHbeSize", { Text = "Added Size (studs)", Min = 1, Max = 250, Default = 20, Rounding = 1, Tooltip = "Studs added to the picked part's size" })
+	mvGroup:AddToggle("mvHbeEnabled", { Text = "Enable Manual Vehicle HBE", Default = false, Tooltip = "Extend the hitbox of a vehicle/part you pick manually\n(independent of every other extender). (Default: OFF)" })
+	mvGroup:AddSlider("mvHbeSize", { Text = "Added Size (studs)", Min = 1, Max = 250, Default = 20, Rounding = 1, Tooltip = "Studs added to the picked part's size. (Default: 20)" })
 	mvGroup:AddSlider("mvHbeTransparency", { Text = "Transparency", Min = 0, Max = 1, Default = 0.6, Rounding = 2 })
-	mvGroup:AddToggle("mvHbeCollisions", { Text = "Keep Collisions", Default = false, Tooltip = "Leave the extended part collidable" })
-	mvGroup:AddToggle("mvHbeWholeModel", { Text = "Whole Model", Default = false, Tooltip = "Extend every BasePart of the picked vehicle's model, not just the one part" })
+	mvGroup:AddToggle("mvHbeCollisions", { Text = "Keep Collisions", Default = false, Tooltip = "Leave the extended part collidable. (Default: OFF)" })
+	mvGroup:AddToggle("mvHbeWholeModel", { Text = "Whole Model", Default = false, Tooltip = "Extend every BasePart of the picked vehicle's model,\nnot just the one part. (Default: OFF)" })
 	local mvInfo = mvGroup:AddLabel("Picked: none")
 
 	local pickedPart = nil
@@ -4045,8 +4349,8 @@ pcall(function()
 
 	local g = miscTab:AddLeftGroupbox("Vehicle ESP")
 	g:AddToggle("vehicleEspEnabled", { Text = "Enable Vehicle ESP", Default = false, Tooltip = "Draw name + type + distance on registered vehicles. (Default: OFF)" })
-	g:AddDropdown("vehicleEspList", { Text = "Registered Vehicles", Values = {}, Multi = false, AllowNull = true, Tooltip = "Vehicles currently tracked" })
-	g:AddDropdown("vehicleEspType", { Text = "Mark As", Values = { "Car", "Helicopter", "Boat", "Plane" }, Default = "Car", Multi = false, AllowNull = false, Tooltip = "Type to tag the selected vehicle with (saved to disk)" })
+	g:AddDropdown("vehicleEspList", { Text = "Registered Vehicles", Values = {}, Multi = false, AllowNull = true, Tooltip = "Vehicles currently tracked. (Default: none)" })
+	g:AddDropdown("vehicleEspType", { Text = "Mark As", Values = { "Car", "Helicopter", "Boat", "Plane" }, Default = "Car", Multi = false, AllowNull = false, Tooltip = "Type to tag the selected vehicle with (saved to disk). (Default: Car)" })
 
 	local registered = {}     -- { { model=, name=, type= }, ... }
 	local vehicleTypes = {}   -- [name] = type (persisted)
@@ -4165,7 +4469,7 @@ pcall(function()
 	g:AddToggle("infAmmoEnabled", { Text = "Enable Inf Ammo", Default = false, Tooltip = "Continuously refills numeric ammo values on your equipped gun(s).\nClient-side heuristic; some games keep ammo server-side. (Default: OFF)" })
 	g:AddToggle("infAmmoAllTools", { Text = "Apply to Any Tool", Default = false, Tooltip = "Apply to every equipped tool, not just registered guns. (Default: OFF)" })
 	g:AddSlider("infAmmoAmount", { Text = "Refill Amount", Min = 1, Max = 9999, Default = 999, Rounding = 0, Tooltip = "Value ammo fields are refilled to each tick. (Default: 999)" })
-	g:AddDropdown("infAmmoGuns", { Text = "Registered Guns", Values = {}, Multi = true, AllowNull = true, Tooltip = "Guns this applies to (unless 'Apply to Any Tool')" })
+	g:AddDropdown("infAmmoGuns", { Text = "Registered Guns", Values = {}, Multi = true, AllowNull = true, Tooltip = "Guns this applies to (unless 'Apply to Any Tool'). (Default: none)" })
 
 	local function addGun(name)
 		if not name or name == "" then return end
@@ -4450,11 +4754,13 @@ pcall(function()
 				tip.Position = UDim2.fromOffset(input.Position.X + 18, input.Position.Y + 12)
 			end
 		end)
+		-- Alt-tab / window blur doesn't fire MouseLeave, which left the tooltip stuck.
+		pcall(function() UserInputService.WindowFocusReleased:Connect(function() tip.Visible = false end) end)
 		Bridge:RegisterAddon("StatusTip", { onUnload = function() pcall(function() tipGui:Destroy() end) end })
 	end)
 
 	-- Changelog viewer: the 3 sentences only load when the button is clicked.
-	clGroup:AddDropdown("clVersion", { Text = "Version", Values = versionStrings, Default = currentVersion, Multi = false, AllowNull = false, Tooltip = "Pick a version, then click View Changelog" })
+	clGroup:AddDropdown("clVersion", { Text = "Version", Values = versionStrings, Default = currentVersion, Multi = false, AllowNull = false, Tooltip = "Pick a version, then click View Changelog. (Default: latest)" })
 	local notesLabel = clGroup:AddLabel("Select a version and click 'View Changelog'.", true)
 	local clShown = false
 	clGroup:AddButton("View Changelog", function()
@@ -4503,8 +4809,8 @@ pcall(function()
 		"MasterToggle","extenderToggled","extenderSize","extenderTransparency","hitboxShape",
 		"partSpecificSizing","headSize","torsoSize","limbSize","dynamicSizing","smoothTransitions",
 		"transitionSpeed","collisionsToggled","outlineMode","outlineTransparency","maxDistance",
-		"closestTargetsOnly","maxTargets","updateRate","randomizationToggled","randomizationAmount",
-		"humanizationToggled","legitModeToggled","seatDisableHBE","seatRadiusMode","seatRadius",
+		"closestTargetsOnly","maxTargets","updateRate","perfAdaptive","perfFpsFloor","randomizationToggled","randomizationAmount",
+		"humanizationToggled","legitModeToggled","seatDisableHBE","seatRadiusMode","seatRadius","seatExitDelayEnabled","seatExitDelay",
 		"espNameToggled","espNameSize","espHighlightToggled","espBoxToggled","espBoxScale",
 		"espTracerToggled","espSkeletonToggled","espHealthBarToggled","espNameType","espMaxDistance",
 		-- ESP extras + anti-detect
@@ -4514,8 +4820,8 @@ pcall(function()
 		"precisionEnabled","precisionExclusive","precisionHitboxSize","precisionTransparency","precisionShape",
 		"precisionCollisions","autoSelectTarget","selectionRadius","dynamicScalingEnabled",
 		"scalingCloseFactor","scalingFarFactor","scalingThreshold",
-		"vehicleAssist","vehicleJoltPower","vehicleSpeedLimiter","vehicleSpeedCap","vehicleManualMode",
-		"toolExpanderEnabled","toolExpandSize","toolAutoApply",
+		"vehicleAssist","vehicleJoltPower","vehicleJoltRelative","vehicleTripleTap","vehicleStabilizer","vehicleGripStrength","vehicleSpeedLimiter","vehicleSpeedCap","vehicleManualMode",
+		"toolExpanderEnabled","toolExpandSize","toolAutoApply","toolAutoScanEquip",
 		"infAmmoEnabled","infAmmoAllTools","infAmmoAmount",
 		"vehicleEspEnabled","mvHbeEnabled","mvHbeSize","mvHbeTransparency","mvHbeCollisions","mvHbeWholeModel",
 		"streamerMaster","hideFOVCircle","hidePlayerESP","hideChams","hideHitboxGlow",
@@ -4565,7 +4871,7 @@ pcall(function()
 		for _, k in ipairs({
 			"extenderToggled", "precisionEnabled", "vehicleAssist", "mvHbeEnabled",
 			"streamerMaster", "infAmmoEnabled", "vehicleEspEnabled", "toolExpanderEnabled",
-			"vehicleSpeedLimiter", "outlineMode", "espNameToggled", "espHighlightToggled",
+			"vehicleSpeedLimiter", "vehicleStabilizer", "outlineMode", "espNameToggled", "espHighlightToggled",
 			"espBoxToggled", "espTracerToggled", "espSkeletonToggled", "fovFilterToggled",
 		}) do
 			pcall(function() if Toggles[k] then Toggles[k]:SetValue(false) end end)
@@ -4584,7 +4890,7 @@ end)
 pcall(function()
 	-- Toggle to show/hide it (it had no off-switch before). Lives in Performance.
 	local grp = performanceGroupbox or mainTab:AddRightGroupbox("UI")
-	grp:AddToggle("showWatermark", { Text = "Show Watermark", Default = true, Tooltip = "On-screen watermark: name | tracked players | status. (Default: ON)" }):OnChanged(function()
+	grp:AddToggle("showWatermark", { Text = "Show Watermark", Default = false, Tooltip = "On-screen watermark: name | tracked players | status. (Default: OFF)" }):OnChanged(function()
 		pcall(function() Library:SetWatermarkVisibility(Toggles.showWatermark.Value) end)
 	end)
 	pcall(function() Library:SetWatermarkVisibility(Toggles.showWatermark.Value) end)
@@ -4601,6 +4907,36 @@ pcall(function()
 				end)
 			end
 			task.wait(1)
+		end
+	end)
+end)
+
+-- Wrap long tooltips so they don't run off-screen. SAFE this time: it's deferred
+-- and pcall'd, and only sets TextWrapped on already-built hidden tooltip labels --
+-- it never replaces Library.AddToolTip (that's what broke the UI build before).
+task.spawn(function()
+	task.wait(1)  -- let tooltip labels be created during build
+	pcall(function()
+		local sg = Library.ScreenGui
+		if not sg then return end
+		for _, d in ipairs(sg:GetDescendants()) do
+			if d:IsA("TextLabel") and type(d.Text) == "string" and #d.Text > 50 and not d.Text:find("\n") then
+				-- Tooltips live inside a hidden frame (control labels are short, so the
+				-- >50 length filter skips them). Only wrap those.
+				local insideHidden, p = false, d.Parent
+				for _ = 1, 6 do
+					if not p or p == sg then break end
+					if p:IsA("GuiObject") and p.Visible == false then insideHidden = true; break end
+					p = p.Parent
+				end
+				if insideHidden then
+					d.TextWrapped = true
+					d.AutomaticSize = Enum.AutomaticSize.Y
+					if d.Size.X.Scale > 0 or d.Size.X.Offset > 300 then
+						d.Size = UDim2.new(0, 280, d.Size.Y.Scale, math.max(d.Size.Y.Offset, 16))
+					end
+				end
+			end
 		end
 	end)
 end)
