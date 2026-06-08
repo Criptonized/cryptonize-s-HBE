@@ -57,22 +57,17 @@ SaveManager:SetLibrary(Library)
 SaveManager:SetFolder("FurryHBE")
 
 -- NOTE: the previous global Library.AddToolTip wrapper was removed -- on some
-
--- NOTE: the previous global Library.AddToolTip wrapper was removed -- on some
 -- LinoriaLib forks it broke control creation (the UI only built the first tab).
 -- Tooltips that need multiple lines just use explicit \n in their text instead.
 
--- GUI-based Drawing fallback for Potassium/Solara
+-- GUI-based Drawing fallback for Potassium
 local DrawingFallback = {}
 DrawingFallback.__index = DrawingFallback
 
 local DrawingGui = Instance.new("ScreenGui")
 DrawingGui.Name = "DrawingFallback"
 DrawingGui.ResetOnSpawn = false
-DrawingGui.IgnoreGuiInset = true
-DrawingGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
--- Prefer gethui() (Potassium's hidden GUI container) over CoreGui for stealth
-DrawingGui.Parent = (typeof(gethui) == "function" and gethui()) or game:GetService("CoreGui")
+DrawingGui.Parent = game:GetService("CoreGui")
 
 function DrawingFallback.new(type)
 	local self = setmetatable({}, DrawingFallback)
@@ -89,10 +84,11 @@ function DrawingFallback.new(type)
 	self.outline = false
 	self.outlineColor = Color3.fromRGB(0, 0, 0)
 	self.transparency = 0
-	self.font = 2 -- Drawing.Fonts.Plex (mapped to SourceSans)
 	self.from = Vector2.new(0, 0)
 	self.to = Vector2.new(0, 0)
+	self.font = 2
 	
+	-- Create GUI element based on type
 	if type == "Circle" then
 		self.element = Instance.new("Frame")
 		self.element.Size = UDim2.new(0, 1, 0, 1)
@@ -100,10 +96,6 @@ function DrawingFallback.new(type)
 		self.element.BackgroundTransparency = 1
 		self.element.BorderSizePixel = 0
 		self.element.Parent = DrawingGui
-		
-		local corner = Instance.new("UICorner")
-		corner.CornerRadius = UDim.new(1, 0)
-		corner.Parent = self.element
 		
 		self.border = Instance.new("UIStroke")
 		self.border.Color = self.color
@@ -117,18 +109,14 @@ function DrawingFallback.new(type)
 		self.element.BorderSizePixel = 0
 		self.element.TextSize = 14
 		self.element.Font = Enum.Font.SourceSans
-		self.element.RichText = false
-		self.element.TextWrapped = false
-		-- FIX: TextLabel MUST have AutomaticSize or it renders as 0x0 pixels
 		self.element.AutomaticSize = Enum.AutomaticSize.XY
 		self.element.Size = UDim2.new(0, 0, 0, 0)
 		self.element.Parent = DrawingGui
 		
-		-- Always create the outline stroke so it's ready when needed
+		-- Always create outline stroke so it's ready when needed
 		self.border = Instance.new("UIStroke")
 		self.border.Color = self.outlineColor
 		self.border.Thickness = 1
-		self.border.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
 		self.border.Enabled = self.outline
 		self.border.Parent = self.element
 	elseif type == "Square" then
@@ -137,17 +125,16 @@ function DrawingFallback.new(type)
 		self.element.BorderSizePixel = 0
 		self.element.Parent = DrawingGui
 		
-		-- FIX: Always create UIStroke so hollow squares render immediately
+		-- Always create UIStroke so hollow squares render immediately
 		self.border = Instance.new("UIStroke")
 		self.border.Color = self.color
-		self.border.Thickness = self.thickness
+		self.border.Thickness = math.max(1, self.thickness)
 		self.border.Enabled = true
 		self.border.Parent = self.element
 	elseif type == "Line" then
 		self.element = Instance.new("Frame")
 		self.element.BackgroundColor3 = self.color
 		self.element.BorderSizePixel = 0
-		self.element.AnchorPoint = Vector2.new(0, 0.5)
 		self.element.Parent = DrawingGui
 	end
 	
@@ -157,7 +144,6 @@ end
 function DrawingFallback:Remove()
 	if self.element then
 		self.element:Destroy()
-		self.element = nil
 	end
 end
 
@@ -167,8 +153,7 @@ function DrawingFallback:Update()
 	self.element.Visible = self.visible
 	
 	if self.type == "Circle" then
-		local d = self.radius * 2
-		self.element.Size = UDim2.new(0, d, 0, d)
+		self.element.Size = UDim2.new(0, self.radius * 2, 0, self.radius * 2)
 		self.element.Position = UDim2.new(0, self.position.X - self.radius, 0, self.position.Y - self.radius)
 		self.border.Color = self.color
 		self.border.Thickness = self.thickness
@@ -180,7 +165,7 @@ function DrawingFallback:Update()
 		self.element.Text = self.text
 		self.element.TextColor3 = self.color
 		self.element.Position = UDim2.new(0, self.position.X, 0, self.position.Y)
-		-- For Text drawings, .size is a NUMBER (font size), not Vector2
+		-- For Text, .size is a NUMBER (font size), not Vector2
 		local fontSize = self.size
 		if type(fontSize) == "number" then
 			self.element.TextSize = math.max(1, fontSize)
@@ -195,7 +180,6 @@ function DrawingFallback:Update()
 			self.element.AnchorPoint = Vector2.new(0, 0)
 		end
 		self.element.TextTransparency = self.transparency or 0
-		-- Outline stroke
 		if self.border then
 			self.border.Enabled = self.outline
 			self.border.Color = self.outlineColor
@@ -204,21 +188,24 @@ function DrawingFallback:Update()
 		self.element.Size = UDim2.new(0, self.size.X, 0, self.size.Y)
 		self.element.Position = UDim2.new(0, self.position.X, 0, self.position.Y)
 		self.element.BackgroundColor3 = self.color
-		self.element.BackgroundTransparency = self.filled and (self.transparency or 0) or 1
-		if self.border then
-			if not self.filled then
-				-- Hollow square: stroke traces the outline in the square's color
-				self.border.Color = self.color
-				self.border.Thickness = math.max(1, self.thickness or 1)
-				self.border.Enabled = true
-			else
-				self.border.Color = self.outlineColor
-				self.border.Thickness = self.thickness
-				self.border.Enabled = self.outline
+		self.element.BackgroundTransparency = self.filled and 0 or 1
+		-- A hollow Square (Filled=false) is meant to read as an outline, but an empty
+		-- Frame draws nothing in the GUI fallback -- which is why the 2D box never
+		-- rendered. Lazily attach a UIStroke and trace the box in its own colour. (B2)
+		if not self.filled then
+			if not self.border then
+				self.border = Instance.new("UIStroke")
+				self.border.Parent = self.element
 			end
+			self.border.Color = self.color
+			self.border.Thickness = math.max(1, self.thickness or 1)
+			self.border.Enabled = true
+		elseif self.border then
+			self.border.Color = self.outlineColor
+			self.border.Thickness = self.thickness
 		end
 	elseif self.type == "Line" then
-		-- FIX: Proper line rendering from From/To using rotation
+		-- Proper line rendering from From/To using rotation
 		local p1 = self.from
 		local p2 = self.to
 		if typeof(p1) == "Vector2" and typeof(p2) == "Vector2" then
@@ -239,44 +226,30 @@ function DrawingFallback:Update()
 end
 
 -- Check if Drawing library is available, otherwise use fallback
--- NOTE: Potassium's Drawing objects use :Destroy(), not :Remove().
--- The probe must use :Destroy() or pcall fails and the fallback activates
--- even though native Drawing IS available (the root cause of ESP not working).
 local DrawingAvailable = pcall(function()
 	local probe = Drawing.new("Circle")
-	-- Try Destroy first (Potassium), fall back to Remove (other executors)
-	if probe.Destroy then
-		probe:Destroy()
-	elseif probe.Remove then
-		probe:Remove()
-	end
+	-- Potassium uses :Destroy(), other executors use :Remove()
+	if probe.Destroy then probe:Destroy() elseif probe.Remove then probe:Remove() end
 end)
 if DrawingAvailable then
-	-- Use native Drawing, but wrap it so :Remove() calls work on Potassium
-	-- (Potassium uses :Destroy(), other executors use :Remove())
-	local RealDrawingNew = Drawing.new
+	-- Use native Drawing, wrapped so :Remove() works on Potassium (which only has :Destroy())
+	local _RealDrawNew = Drawing.new
 	DrawingFallback.new = function(drawType)
-		local obj = RealDrawingNew(drawType)
-		-- Ensure both Remove and Destroy exist for cross-executor compatibility
-		if not obj.Remove and obj.Destroy then
-			-- Potassium: has Destroy but not Remove
-			obj.Remove = obj.Destroy
-		elseif not obj.Destroy and obj.Remove then
-			-- Other executors: has Remove but not Destroy
-			obj.Destroy = obj.Remove
-		end
+		local obj = _RealDrawNew(drawType)
+		if not obj.Remove and obj.Destroy then obj.Remove = obj.Destroy end
+		if not obj.Destroy and obj.Remove then obj.Destroy = obj.Remove end
 		return obj
 	end
 else
 	-- Use GUI fallback: map public PascalCase props to internal lowercase storage.
+	-- These metamethods go on DrawingFallback itself, which is the metatable of every
+	-- instance created via setmetatable({}, DrawingFallback) -- NOT on getmetatable(DrawingFallback).
 	local propMap = {
 		Visible = "visible", Color = "color", Thickness = "thickness",
 		Filled = "filled", Position = "position", Size = "size",
 		Radius = "radius", Text = "text", Center = "center",
 		Outline = "outline", OutlineColor = "outlineColor",
-		-- FIX: These were missing, causing Line/Tracer/Transparency to silently fail
-		From = "from", To = "to", Transparency = "transparency",
-		Font = "font",
+		From = "from", To = "to", Transparency = "transparency", Font = "font",
 	}
 
 	DrawingFallback.__index = function(self, key)
@@ -297,7 +270,6 @@ else
 		rawset(self, key, value)
 	end
 end
-end
 
 -- Cached services
 local Teams = game:GetService("Teams")
@@ -309,10 +281,6 @@ local UserInputService = game:GetService("UserInputService")
 local Camera = Workspace.CurrentCamera
 local WorldToViewportPoint = Camera.WorldToViewportPoint
 local lPlayer = Players.LocalPlayer
-
--- Safe GUI parent: Potassium provides gethui() as a hidden container that's
--- harder to detect than CoreGui. Fall back to CoreGui on other executors.
-local SafeGuiParent = (typeof(gethui) == "function" and gethui()) or game:GetService("CoreGui")
 
 -- Global tables
 local players = {}
@@ -736,7 +704,7 @@ do
 				highlight.OutlineColor = col
 				highlight.FillTransparency = 0.6
 				highlight.OutlineTransparency = 0
-				highlight.Parent = SafeGuiParent
+				highlight.Parent = game:GetService("CoreGui")
 			end
 		end
 
@@ -787,7 +755,7 @@ do
 	})
 end
 
--- HBE Tab (formerly "Main")
+-- Main Tab
 local mainTab = mainWindow:AddTab("HBE")
 local hitboxGroupbox = mainTab:AddLeftGroupbox("Hitbox Settings")
 local filterGroupbox = mainTab:AddLeftGroupbox("Filter Settings")
@@ -1739,7 +1707,7 @@ local function updatePartScanner()
 			partScannerHighlight.OutlineColor = hl
 			partScannerHighlight.FillTransparency = 0.7
 			partScannerHighlight.OutlineTransparency = 0
-			partScannerHighlight.Parent = SafeGuiParent
+			partScannerHighlight.Parent = game:GetService("CoreGui")
 		end
 	end
 
@@ -2437,7 +2405,7 @@ function addPlayer(player)
 	end
 
 	local chams = Instance.new("Highlight")
-	chams.Parent = SafeGuiParent
+	chams.Parent = game:GetService("CoreGui")
 
 	-- Expose the drawing objects on the player record so the name-declutter pass
 	-- and add-ons can reach them (they're otherwise closure-local upvalues).
@@ -4812,7 +4780,6 @@ pcall(function()
 		"Improvements batch 1: per-game settings profiles (auto-save/load by PlaceId), a master PANIC/Reset-All button, global Rainbow ESP with a speed slider, animated chams Glow Pulse, a vehicle anti-fling clamp on the speed jolt, and an on-screen watermark showing tracked-player count and error status. Each was added as an isolated module so it can't affect the core.",
 		"Improvements batch 2: Smart Jitter (smooth sine size-variation) and a Max-Plausible cap for safer extension, ESP line-thickness + distance-fade, Vehicle ESP now shows the driver/occupant name, and the per-game profile now persists every add-on's settings too (unified persistence). Remaining draft items (aim-resolver modes, dropdown search, blurred/animated UI) are game/fork-specific and intentionally left for dedicated passes.",
 		"Adaptive Inf-Ammo resolver: it now tries detection strategies in order (named values, attributes, Configuration folders, player-side values) and falls through until one finds the ammo, caching the winner per gun. If all fail, a learning detector watches the gun and adopts any number that drops when you fire. A label shows which method detected.",
-		"Major overhaul: Melee HBE tab with visual hitbox (green box indicator), XYZ expansion sliders, wall penetration, shield bypass, silent aim with crosshair, weapon auto-reader. Target Groups (area-select within X studs). Fixed ESP on Solara/DrawingFallback: 2D boxes now render (UIStroke created on construction), names always visible (AutomaticSize), Line From/To/Transparency mapped. Fixed head sizes disappearing. Tab renamed Main to HBE. Complete DrawingFallback rewrite with proper line rotation rendering.",
 	}
 	local function verNum(i) return 1 + 0.5 * (i - 1) end
 	local function fmtV(n) return "V" .. (n == math.floor(n) and tostring(math.floor(n)) or tostring(n)) end
@@ -4895,7 +4862,7 @@ pcall(function()
 		local tipGui = Instance.new("ScreenGui")
 		tipGui.Name = "FurryHBE_StatusTip"; tipGui.ResetOnSpawn = false
 		tipGui.DisplayOrder = 999999; tipGui.IgnoreGuiInset = true
-		tipGui.Parent = SafeGuiParent
+		tipGui.Parent = game:GetService("CoreGui")
 		local tip = Instance.new("TextLabel")
 		tip.AutomaticSize = Enum.AutomaticSize.Y
 		tip.Size = UDim2.fromOffset(320, 0)
@@ -4990,10 +4957,6 @@ pcall(function()
 		"infAmmoEnabled","infAmmoAllTools","infAmmoAmount",
 		"vehicleEspEnabled","vehicleEspAutoTrack","mvHbeEnabled","mvHbeSize","mvHbeTransparency","mvHbeCollisions","mvHbeWholeModel",
 		"streamerMaster","hideFOVCircle","hidePlayerESP","hideChams","hideHitboxGlow",
-		"meleeHBEnabled","meleeExpandX","meleeExpandY","meleeExpandZ","meleeNoCollide","meleeWallPen","meleeShieldBypass",
-		"meleeSilentAim","meleeCrosshair","meleeAutoShiftlock","meleeSilentRange","meleeTargetMode","meleeMaxTargetDist",
-		"meleeIgnoreTeam","meleeIgnoreWhitelist","meleeAreaEnabled","meleeAreaRadius","meleeAreaMaxTargets",
-		"targetGroupEnabled","targetGroupRadius","targetGroupMax",
 	}
 	local g = profilesTab:AddLeftGroupbox("Per-Game Profile")
 	g:AddLabel("Game PlaceId: " .. tostring(game.PlaceId), true)
@@ -5041,7 +5004,6 @@ pcall(function()
 			"extenderToggled", "precisionEnabled", "vehicleAssist", "mvHbeEnabled",
 			"streamerMaster", "infAmmoEnabled", "vehicleEspEnabled", "toolExpanderEnabled",
 			"vehicleSpeedLimiter", "vehicleStabilizer", "outlineMode", "espNameToggled", "espHighlightToggled",
-			"meleeHBEnabled", "meleeSilentAim", "meleeAreaEnabled", "targetGroupEnabled",
 			"espBoxToggled", "espTracerToggled", "espSkeletonToggled", "fovFilterToggled",
 		}) do
 			pcall(function() if Toggles[k] then Toggles[k]:SetValue(false) end end)
@@ -5081,801 +5043,6 @@ pcall(function()
 	end)
 end)
 
-
--- ===== [MELEE] Complete Melee HBE System ====================================
--- Own tab with: visual tool hitbox, expand/resize, silent aim, wall penetration,
--- shield bypass, weapon reader, crosshair on shiftlock, team/whitelist ignore,
--- target groups (area-select within X studs)
-pcall(function()
-	local lPlayer = Players.LocalPlayer
-	local cam = Workspace.CurrentCamera
-	local UIS = UserInputService
-
-	local meleeTab = mainWindow:AddTab("Melee")
-
-	local meleeHBGroup   = meleeTab:AddLeftGroupbox("Melee Hitbox")
-	local meleeVisGroup  = meleeTab:AddLeftGroupbox("Visual Hitbox")
-	local meleeSilentGroup = meleeTab:AddLeftGroupbox("Silent Aim")
-	local meleeTargetGroup = meleeTab:AddRightGroupbox("Targeting")
-	local meleeAreaGroup   = meleeTab:AddRightGroupbox("Target Groups")
-	local meleeWeaponGroup = meleeTab:AddRightGroupbox("Weapon Reader")
-	local meleeInfoGroup   = meleeTab:AddRightGroupbox("Info")
-
-	-- ===== Weapon Reader =====
-	local detectedWeapon = nil
-	local detectedWeaponType = "Unknown"
-	local weaponInfoLabel = meleeWeaponGroup:AddLabel("Equipped: none")
-
-	local WEAPON_PATTERNS = {
-		Sword  = {"sword", "blade", "katana", "saber", "sabre", "claymore", "rapier", "cutlass", "scimitar", "machete", "dagger", "knife", "axe", "hatchet", "cleaver", "tanto"},
-		Fist   = {"fist", "glove", "punch", "knuckle", "boxing", "brass", "gauntlet", "brawl"},
-		Shield = {"shield", "buckler", "guard", "blocker", "barrier", "aegis"},
-		Hammer = {"hammer", "mallet", "maul", "sledge", "club", "bat", "mace", "flail"},
-		Spear  = {"spear", "lance", "javelin", "pike", "halberd", "trident", "polearm", "staff", "bo"},
-	}
-
-	local function classifyWeapon(tool)
-		if not tool then return "Unknown" end
-		local name = tool.Name:lower()
-		for wtype, patterns in pairs(WEAPON_PATTERNS) do
-			for _, pat in ipairs(patterns) do
-				if name:find(pat) then return wtype end
-			end
-		end
-		-- Check if it has a Handle or Blade part
-		if tool:FindFirstChild("Handle") or tool:FindFirstChild("Blade") then
-			return "Melee"
-		end
-		return "Tool"
-	end
-
-	local function getEquippedTool()
-		local char = lPlayer.Character
-		if not char then return nil end
-		for _, child in ipairs(char:GetChildren()) do
-			if child:IsA("Tool") then return child end
-		end
-		return nil
-	end
-
-	local function refreshWeaponInfo()
-		local tool = getEquippedTool()
-		if tool then
-			detectedWeapon = tool
-			detectedWeaponType = classifyWeapon(tool)
-			weaponInfoLabel:SetText("Equipped: " .. tool.Name .. " [" .. detectedWeaponType .. "]")
-		else
-			detectedWeapon = nil
-			detectedWeaponType = "Unknown"
-			weaponInfoLabel:SetText("Equipped: none")
-		end
-	end
-
-	meleeWeaponGroup:AddButton("Refresh Weapon", refreshWeaponInfo):AddToolTip("Re-detect the currently equipped melee weapon")
-
-	-- ===== Melee Hitbox Extender =====
-	local meleeOriginalSizes = setmetatable({}, { __mode = "k" })
-	local meleeExpandedParts = setmetatable({}, { __mode = "k" })
-
-	meleeHBGroup:AddToggle("meleeHBEnabled", { Text = "Enable Melee HBE", Default = false,
-		Tooltip = "Expand your melee weapon's hitbox parts.\nNon-collidable so it doesn't push players\nbut still registers damage. (Default: OFF)" })
-
-	meleeHBGroup:AddSlider("meleeExpandX", { Text = "Expand X", Min = 0, Max = 20, Default = 3, Rounding = 1,
-		Tooltip = "Horizontal expansion in studs. (Default: 3)" })
-	meleeHBGroup:AddSlider("meleeExpandY", { Text = "Expand Y", Min = 0, Max = 20, Default = 3, Rounding = 1,
-		Tooltip = "Vertical expansion in studs. (Default: 3)" })
-	meleeHBGroup:AddSlider("meleeExpandZ", { Text = "Expand Z", Min = 0, Max = 30, Default = 5, Rounding = 1,
-		Tooltip = "Forward/reach expansion in studs. (Default: 5)" })
-
-	meleeHBGroup:AddToggle("meleeNoCollide", { Text = "No Collision (Hitbox)", Default = true,
-		Tooltip = "Make the expanded hitbox non-collidable\nso it doesn't push players away.\nThe hitbox still registers damage. (Default: ON)" })
-
-	meleeHBGroup:AddToggle("meleeWallPen", { Text = "Wall Penetration", Default = false,
-		Tooltip = "Allow melee hits to register through walls\nand objects. Works by temporarily making\nobstacle parts non-collidable during swing. (Default: OFF)" })
-
-	meleeHBGroup:AddToggle("meleeShieldBypass", { Text = "Shield Bypass", Default = false,
-		Tooltip = "Ignore shield/guard parts on the target.\nWorks by making shield-named parts\nnon-collidable during your swing. (Default: OFF)" })
-
-	meleeHBGroup:AddButton("Reset Melee HBE", function()
-		for part, origSize in pairs(meleeOriginalSizes) do
-			if typeof(part) == "Instance" and part.Parent then
-				pcall(function()
-					part.Size = origSize.Size
-					part.CanCollide = origSize.CanCollide
-				end)
-			end
-		end
-		meleeOriginalSizes = setmetatable({}, { __mode = "k" })
-		meleeExpandedParts = setmetatable({}, { __mode = "k" })
-		Library:Notify("Melee hitbox reset")
-	end):AddToolTip("Restore all melee parts to their original sizes")
-
-	-- ===== Visual Hitbox =====
-	local meleeVisuals = {} -- [part] = { original = Highlight, expanded = Highlight }
-
-	meleeVisGroup:AddToggle("meleeShowOriginal", { Text = "Show Original Hitbox", Default = false,
-		Tooltip = "Show the tool's original hitbox in its natural color. (Default: OFF)" })
-
-	meleeVisGroup:AddToggle("meleeShowExpanded", { Text = "Show Expanded Hitbox", Default = true,
-		Tooltip = "Show the expanded hitbox area as a green box. (Default: ON)" })
-
-	meleeVisGroup:AddLabel("Original HB Color"):AddColorPicker("meleeOrigColor", {
-		Title = "Original HB Color", Default = Color3.fromRGB(100, 100, 255)
-	})
-
-	meleeVisGroup:AddLabel("Expanded HB Color"):AddColorPicker("meleeExpandColor", {
-		Title = "Expanded HB Color", Default = Color3.fromRGB(0, 255, 0)
-	})
-
-	meleeVisGroup:AddSlider("meleeVisTransparency", { Text = "Visual Transparency", Min = 0, Max = 0.95, Default = 0.6, Rounding = 2,
-		Tooltip = "Transparency of the visual hitbox indicators. (Default: 0.6)" })
-
-	-- ===== Visual box rendering via BillboardGui + Frame (always works in Solara) =====
-	local meleeVizParts = setmetatable({}, { __mode = "k" })
-
-	local function createMeleeViz(part, color, tag)
-		local existing = part:FindFirstChild("FurryHBE_MeleeViz_" .. tag)
-		if existing then return existing end
-
-		local bb = Instance.new("BillboardGui")
-		bb.Name = "FurryHBE_MeleeViz_" .. tag
-		bb.Adornee = part
-		bb.Size = UDim2.new(part.Size.X, 0, part.Size.Y, 0)
-		bb.StudsOffset = Vector3.new(0, 0, 0)
-		bb.AlwaysOnTop = true
-		bb.Parent = part
-
-		local frame = Instance.new("Frame")
-		frame.Size = UDim2.new(1, 0, 1, 0)
-		frame.BackgroundColor3 = color
-		frame.BackgroundTransparency = 0.6
-		frame.BorderSizePixel = 0
-		frame.Parent = bb
-
-		local stroke = Instance.new("UIStroke")
-		stroke.Color = color
-		stroke.Thickness = 2
-		stroke.Parent = frame
-
-		return bb
-	end
-
-	local function clearMeleeViz(part, tag)
-		local existing = part:FindFirstChild("FurryHBE_MeleeViz_" .. tag)
-		if existing then existing:Destroy() end
-	end
-
-	local function clearAllMeleeViz()
-		for part in pairs(meleeVizParts) do
-			if typeof(part) == "Instance" and part.Parent then
-				clearMeleeViz(part, "orig")
-				clearMeleeViz(part, "exp")
-			end
-		end
-		meleeVizParts = setmetatable({}, { __mode = "k" })
-	end
-
-	-- ===== Apply melee expansion =====
-	local function applyMeleeExpansion()
-		local tool = getEquippedTool()
-		if not tool then return end
-
-		local expandX = Options.meleeExpandX.Value
-		local expandY = Options.meleeExpandY.Value
-		local expandZ = Options.meleeExpandZ.Value
-		local noCollide = Toggles.meleeNoCollide.Value
-
-		for _, part in ipairs(tool:GetDescendants()) do
-			if part:IsA("BasePart") then
-				-- Store original
-				if not meleeOriginalSizes[part] then
-					meleeOriginalSizes[part] = {
-						Size = part.Size,
-						CanCollide = part.CanCollide,
-						Transparency = part.Transparency,
-					}
-				end
-
-				local orig = meleeOriginalSizes[part]
-
-				if Toggles.meleeHBEnabled.Value then
-					-- Apply expansion
-					part.Size = orig.Size + Vector3.new(expandX, expandY, expandZ)
-					if noCollide then
-						part.CanCollide = false
-					end
-					-- Make the expanded part transparent (gameplay invisible) but keep damage
-					part.Transparency = 1
-					meleeExpandedParts[part] = true
-
-					-- Visual indicators
-					if Toggles.meleeShowOriginal and Toggles.meleeShowOriginal.Value then
-						local viz = createMeleeViz(part, Options.meleeOrigColor.Value, "orig")
-						viz.Size = UDim2.new(orig.Size.X, 0, orig.Size.Y, 0)
-						local fr = viz:FindFirstChildWhichIsA("Frame")
-						if fr then
-							fr.BackgroundTransparency = Options.meleeVisTransparency.Value
-							fr.BackgroundColor3 = Options.meleeOrigColor.Value
-							local st = fr:FindFirstChildWhichIsA("UIStroke")
-							if st then st.Color = Options.meleeOrigColor.Value end
-						end
-						meleeVizParts[part] = true
-					else
-						clearMeleeViz(part, "orig")
-					end
-
-					if Toggles.meleeShowExpanded and Toggles.meleeShowExpanded.Value then
-						local viz = createMeleeViz(part, Options.meleeExpandColor.Value, "exp")
-						viz.Size = UDim2.new(part.Size.X, 0, part.Size.Y, 0)
-						local fr = viz:FindFirstChildWhichIsA("Frame")
-						if fr then
-							fr.BackgroundTransparency = Options.meleeVisTransparency.Value
-							fr.BackgroundColor3 = Options.meleeExpandColor.Value
-							local st = fr:FindFirstChildWhichIsA("UIStroke")
-							if st then st.Color = Options.meleeExpandColor.Value end
-						end
-						meleeVizParts[part] = true
-					else
-						clearMeleeViz(part, "exp")
-					end
-				else
-					-- Restore
-					part.Size = orig.Size
-					part.CanCollide = orig.CanCollide
-					part.Transparency = orig.Transparency
-					clearMeleeViz(part, "orig")
-					clearMeleeViz(part, "exp")
-				end
-			end
-		end
-	end
-
-	local function restoreMelee()
-		for part, orig in pairs(meleeOriginalSizes) do
-			if typeof(part) == "Instance" and part.Parent then
-				pcall(function()
-					part.Size = orig.Size
-					part.CanCollide = orig.CanCollide
-					part.Transparency = orig.Transparency
-				end)
-			end
-		end
-		meleeOriginalSizes = setmetatable({}, { __mode = "k" })
-		meleeExpandedParts = setmetatable({}, { __mode = "k" })
-		clearAllMeleeViz()
-	end
-
-	-- ===== Silent Aim =====
-	local meleeTarget = nil
-	local crosshairDrawing = DrawingFallback.new("Circle")
-	crosshairDrawing.Thickness = 2
-	crosshairDrawing.Color = Color3.fromRGB(255, 0, 0)
-	crosshairDrawing.Filled = false
-	crosshairDrawing.Radius = 5
-	crosshairDrawing.Visible = false
-
-	local crosshairDot = DrawingFallback.new("Circle")
-	crosshairDot.Thickness = 1
-	crosshairDot.Color = Color3.fromRGB(255, 0, 0)
-	crosshairDot.Filled = true
-	crosshairDot.Radius = 2
-	crosshairDot.Visible = false
-
-	meleeSilentGroup:AddToggle("meleeSilentAim", { Text = "Enable Silent Aim", Default = false,
-		Tooltip = "When you swing/click with a melee weapon,\nthe hit is redirected to the nearest valid\ntarget. (Default: OFF)" })
-
-	meleeSilentGroup:AddToggle("meleeCrosshair", { Text = "Show Crosshair", Default = true,
-		Tooltip = "Show a crosshair on screen in shiftlock\nor when a target is acquired. (Default: ON)" })
-
-	meleeSilentGroup:AddToggle("meleeAutoShiftlock", { Text = "Auto-Detect Shiftlock", Default = true,
-		Tooltip = "Auto-detect when shiftlock/first person\nis active and show crosshair. (Default: ON)" })
-
-	meleeSilentGroup:AddSlider("meleeSilentRange", { Text = "Silent Aim Range (studs)", Min = 5, Max = 100, Default = 20, Rounding = 1,
-		Tooltip = "Maximum range for silent aim to reach. (Default: 20)" })
-
-	meleeSilentGroup:AddLabel("Crosshair Color"):AddColorPicker("meleeCrosshairColor", {
-		Title = "Crosshair Color", Default = Color3.fromRGB(255, 0, 0)
-	})
-
-	-- ===== Targeting =====
-	meleeTargetGroup:AddToggle("meleeIgnoreTeam", { Text = "Ignore Teammates", Default = true,
-		Tooltip = "Don't target players on your team. (Default: ON)" })
-
-	meleeTargetGroup:AddToggle("meleeIgnoreWhitelist", { Text = "Respect Whitelist", Default = true,
-		Tooltip = "Don't target whitelisted players. (Default: ON)" })
-
-	meleeTargetGroup:AddDropdown("meleeTargetMode", { Text = "Target Mode", AllowNull = false, Multi = false,
-		Values = { "Nearest", "Crosshair", "Lowest HP", "Highest Threat" },
-		Default = "Nearest",
-		Tooltip = "How to pick the melee target:\n• Nearest = closest player\n• Crosshair = closest to aim\n• Lowest HP = weakest first\n• Highest Threat = close + weak\n(Default: Nearest)" })
-
-	meleeTargetGroup:AddSlider("meleeMaxTargetDist", { Text = "Max Target Distance", Min = 5, Max = 200, Default = 50, Rounding = 1,
-		Tooltip = "Maximum distance to consider a target. (Default: 50)" })
-
-	local meleeTargetLabel = meleeInfoGroup:AddLabel("Target: none")
-
-	-- ===== Target Groups (area select) =====
-	meleeAreaGroup:AddToggle("meleeAreaEnabled", { Text = "Target Groups (Area)", Default = false,
-		Tooltip = "Select all players within a radius\nas targets simultaneously. (Default: OFF)" })
-
-	meleeAreaGroup:AddSlider("meleeAreaRadius", { Text = "Group Radius (studs)", Min = 5, Max = 100, Default = 20, Rounding = 1,
-		Tooltip = "Radius around you to select targets. (Default: 20)" })
-
-	meleeAreaGroup:AddSlider("meleeAreaMaxTargets", { Text = "Max Group Size", Min = 1, Max = 20, Default = 5, Rounding = 0,
-		Tooltip = "Maximum number of targets in a group. (Default: 5)" })
-
-	local meleeAreaLabel = meleeAreaGroup:AddLabel("Group: 0 targets")
-
-	-- ===== Core targeting logic =====
-	local meleeTargets = {} -- current target list (for area mode)
-
-	local function isMeleeTargetable(plr)
-		if plr == lPlayer then return false end
-		local char = plr.Character
-		if not char then return false end
-		local hum = char:FindFirstChildWhichIsA("Humanoid")
-		if not hum or hum.Health <= 0 then return false end
-		if hum:GetState() == Enum.HumanoidStateType.Dead then return false end
-
-		-- Team check
-		if Toggles.meleeIgnoreTeam.Value then
-			pcall(function()
-				if lPlayer.Team ~= nil and plr.Team ~= nil and lPlayer.Team == plr.Team then
-					return -- can't return from pcall to outer scope
-				end
-			end)
-			-- Proper team check
-			local sameTeam = false
-			pcall(function()
-				if lPlayer.Team and plr.Team and lPlayer.Team == plr.Team then
-					sameTeam = true
-				end
-			end)
-			if sameTeam then return false end
-		end
-
-		-- Whitelist check
-		if Toggles.meleeIgnoreWhitelist.Value and isWhitelisted(plr) then
-			return false
-		end
-
-		return true
-	end
-
-	local function getMeleeTarget()
-		local mode = Options.meleeTargetMode.Value
-		local maxDist = Options.meleeMaxTargetDist.Value
-		local char = lPlayer.Character
-		if not char then return nil end
-		local root = char:FindFirstChild("HumanoidRootPart")
-		if not root then return nil end
-
-		local candidates = {}
-		for _, plr in ipairs(Players:GetPlayers()) do
-			if isMeleeTargetable(plr) then
-				local pChar = plr.Character
-				local pRoot = pChar and pChar:FindFirstChild("HumanoidRootPart")
-				if pRoot then
-					local dist = (pRoot.Position - root.Position).Magnitude
-					if dist <= maxDist then
-						local hum = pChar:FindFirstChildWhichIsA("Humanoid")
-						local screenAngle = math.huge
-						pcall(function()
-							local head = pChar:FindFirstChild("Head")
-							if head then
-								local pos, on = cam:WorldToViewportPoint(head.Position)
-								if on then
-									local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
-									screenAngle = (Vector2.new(pos.X, pos.Y) - center).Magnitude
-								end
-							end
-						end)
-						table.insert(candidates, {
-							player = plr,
-							character = pChar,
-							root = pRoot,
-							distance = dist,
-							screenAngle = screenAngle,
-							health = hum and hum.Health or 100,
-							maxHealth = hum and hum.MaxHealth or 100,
-						})
-					end
-				end
-			end
-		end
-
-		if #candidates == 0 then return nil end
-
-		if mode == "Nearest" then
-			table.sort(candidates, function(a, b) return a.distance < b.distance end)
-		elseif mode == "Crosshair" then
-			table.sort(candidates, function(a, b) return a.screenAngle < b.screenAngle end)
-		elseif mode == "Lowest HP" then
-			table.sort(candidates, function(a, b) return a.health < b.health end)
-		elseif mode == "Highest Threat" then
-			for _, c in ipairs(candidates) do
-				local hpRatio = c.health / math.max(1, c.maxHealth)
-				local distRatio = math.clamp(c.distance / maxDist, 0, 1)
-				c.threat = (1 - hpRatio) * 0.4 + (1 - distRatio) * 0.6
-			end
-			table.sort(candidates, function(a, b) return a.threat > b.threat end)
-		end
-
-		return candidates[1]
-	end
-
-	local function getMeleeTargetGroup()
-		local radius = Options.meleeAreaRadius.Value
-		local maxTargets = Options.meleeAreaMaxTargets.Value
-		local char = lPlayer.Character
-		if not char then return {} end
-		local root = char:FindFirstChild("HumanoidRootPart")
-		if not root then return {} end
-
-		local targets = {}
-		for _, plr in ipairs(Players:GetPlayers()) do
-			if isMeleeTargetable(plr) then
-				local pChar = plr.Character
-				local pRoot = pChar and pChar:FindFirstChild("HumanoidRootPart")
-				if pRoot then
-					local dist = (pRoot.Position - root.Position).Magnitude
-					if dist <= radius then
-						table.insert(targets, { player = plr, distance = dist })
-					end
-				end
-			end
-		end
-
-		table.sort(targets, function(a, b) return a.distance < b.distance end)
-		local result = {}
-		for i = 1, math.min(maxTargets, #targets) do
-			table.insert(result, targets[i].player)
-		end
-		return result
-	end
-
-	-- ===== Silent aim: redirect hit on swing =====
-	-- This works by temporarily moving the target's HumanoidRootPart closer
-	-- to where you're swinging, then restoring it. The game's hit detection
-	-- picks up the closer position.
-	local isSilentAiming = false
-
-	local function silentAimTick()
-		if not Toggles.meleeSilentAim.Value then return end
-		if not Toggles.meleeHBEnabled.Value then return end
-		local tool = getEquippedTool()
-		if not tool then return end
-
-		local target = getMeleeTarget()
-		if not target then
-			meleeTarget = nil
-			return
-		end
-		meleeTarget = target
-	end
-
-	-- Shield bypass: make shield-named parts on target non-collidable during swing
-	local shieldCache = setmetatable({}, { __mode = "k" })
-
-	local function bypassShields(targetChar, enable)
-		if not Toggles.meleeShieldBypass.Value then return end
-		local SHIELD_NAMES = {"shield", "guard", "block", "barrier", "aegis", "buckler", "parry"}
-
-		for _, part in ipairs(targetChar:GetDescendants()) do
-			if part:IsA("BasePart") then
-				local n = part.Name:lower()
-				for _, pat in ipairs(SHIELD_NAMES) do
-					if n:find(pat) then
-						if enable then
-							if not shieldCache[part] then
-								shieldCache[part] = part.CanCollide
-							end
-							part.CanCollide = false
-						else
-							if shieldCache[part] ~= nil then
-								part.CanCollide = shieldCache[part]
-								shieldCache[part] = nil
-							end
-						end
-						break
-					end
-				end
-			end
-		end
-	end
-
-	-- Wall penetration: temporarily make obstacles between you and target non-collidable
-	local wallCache = setmetatable({}, { __mode = "k" })
-
-	local function penetrateWalls(targetPos, enable)
-		if not Toggles.meleeWallPen.Value then return end
-		local char = lPlayer.Character
-		if not char then return end
-		local root = char:FindFirstChild("HumanoidRootPart")
-		if not root then return end
-
-		if enable then
-			local params = RaycastParams.new()
-			params.FilterType = Enum.RaycastFilterType.Exclude
-			params.FilterDescendantsInstances = {char}
-
-			local direction = (targetPos - root.Position)
-			local results = {}
-			local origin = root.Position
-			-- Cast multiple rays to find all obstacles
-			for i = 1, 5 do
-				local result = Workspace:Raycast(origin, direction.Unit * math.min(direction.Magnitude, 50), params)
-				if result and result.Instance then
-					local part = result.Instance
-					-- Don't disable character parts
-					local isCharPart = false
-					pcall(function()
-						local pChar = part:FindFirstAncestorWhichIsA("Model")
-						if pChar and pChar:FindFirstChildWhichIsA("Humanoid") then
-							isCharPart = true
-						end
-					end)
-					if not isCharPart then
-						if not wallCache[part] then
-							wallCache[part] = part.CanCollide
-						end
-						part.CanCollide = false
-						table.insert(params.FilterDescendantsInstances, part)
-					end
-					origin = result.Position + direction.Unit * 0.1
-				else
-					break
-				end
-			end
-		else
-			-- Restore walls
-			for part, origCollide in pairs(wallCache) do
-				if typeof(part) == "Instance" and part.Parent then
-					pcall(function() part.CanCollide = origCollide end)
-				end
-			end
-			wallCache = setmetatable({}, { __mode = "k" })
-		end
-	end
-
-	-- ===== Crosshair rendering =====
-	local function isInShiftlock()
-		if not Toggles.meleeAutoShiftlock.Value then return false end
-		-- Detect shiftlock/first person
-		local cam = Workspace.CurrentCamera
-		if cam.CameraType == Enum.CameraType.Scriptable then return false end
-		local char = lPlayer.Character
-		if not char then return false end
-		local head = char:FindFirstChild("Head")
-		if not head then return false end
-		-- In shiftlock/FP, camera is very close to head
-		local dist = (cam.CFrame.Position - head.Position).Magnitude
-		return dist < 3
-	end
-
-	-- ===== Main melee loop =====
-	local lastMeleeRefresh = 0
-
-	local meleeConn = RunService.Heartbeat:Connect(function()
-		pcall(refreshWeaponInfo)
-
-		-- Melee expansion
-		if Toggles.meleeHBEnabled.Value then
-			pcall(applyMeleeExpansion)
-		end
-
-		-- Silent aim target acquisition
-		pcall(silentAimTick)
-
-		-- Target group update
-		if Toggles.meleeAreaEnabled and Toggles.meleeAreaEnabled.Value then
-			meleeTargets = getMeleeTargetGroup()
-		else
-			meleeTargets = {}
-		end
-
-		-- Update info labels (throttled)
-		local now = tick()
-		if now - lastMeleeRefresh > 0.3 then
-			lastMeleeRefresh = now
-			if meleeTarget then
-				meleeTargetLabel:SetText("Target: " .. meleeTarget.player.Name .. " [" .. math.floor(meleeTarget.distance) .. "m]")
-			else
-				meleeTargetLabel:SetText("Target: none")
-			end
-			meleeAreaLabel:SetText("Group: " .. #meleeTargets .. " targets")
-		end
-	end)
-
-	-- Crosshair render
-	RunService:BindToRenderStep("FurryHBE_MeleeCrosshair", Enum.RenderPriority.Last.Value + 3, function()
-		local showCrosshair = Toggles.meleeCrosshair and Toggles.meleeCrosshair.Value
-		local inShiftlock = isInShiftlock()
-		local hasTool = getEquippedTool() ~= nil
-		local silentOn = Toggles.meleeSilentAim and Toggles.meleeSilentAim.Value
-
-		if showCrosshair and hasTool and (inShiftlock or silentOn) then
-			cam = Workspace.CurrentCamera
-			local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
-			local col = Options.meleeCrosshairColor.Value
-
-			-- If we have a target, tint crosshair
-			if meleeTarget and silentOn then
-				col = Color3.fromRGB(0, 255, 0)
-			end
-
-			crosshairDrawing.Position = center
-			crosshairDrawing.Color = col
-			crosshairDrawing.Visible = true
-
-			crosshairDot.Position = center
-			crosshairDot.Color = col
-			crosshairDot.Visible = true
-		else
-			crosshairDrawing.Visible = false
-			crosshairDot.Visible = false
-		end
-	end)
-
-	-- ===== Silent aim activation on click =====
-	-- When you click to swing, redirect to target
-	UIS.InputBegan:Connect(function(input, gp)
-		if gp then return end
-		if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
-		if not Toggles.meleeSilentAim.Value then return end
-		if not Toggles.meleeHBEnabled.Value then return end
-
-		local tool = getEquippedTool()
-		if not tool then return end
-		if not meleeTarget then return end
-
-		local targetChar = meleeTarget.character
-		local targetRoot = meleeTarget.root
-		if not targetRoot or not targetRoot.Parent then return end
-
-		-- Shield bypass
-		pcall(function() bypassShields(targetChar, true) end)
-
-		-- Wall penetration
-		pcall(function() penetrateWalls(targetRoot.Position, true) end)
-
-		-- Brief delay then restore
-		task.spawn(function()
-			task.wait(0.15) -- enough for hit to register
-			pcall(function() bypassShields(targetChar, false) end)
-			pcall(function() penetrateWalls(targetRoot.Position, false) end)
-		end)
-	end)
-
-	-- ===== Cleanup =====
-	Toggles.meleeHBEnabled:OnChanged(function()
-		if not Toggles.meleeHBEnabled.Value then
-			restoreMelee()
-		end
-	end)
-
-	Bridge:RegisterAddon("MeleeHBE", {
-		onUnload = function()
-			pcall(restoreMelee)
-			pcall(function() crosshairDrawing:Remove() end)
-			pcall(function() crosshairDot:Remove() end)
-			if meleeConn then pcall(function() meleeConn:Disconnect() end) end
-			pcall(function() RunService:UnbindFromRenderStep("FurryHBE_MeleeCrosshair") end)
-			-- Restore shields and walls
-			for part, v in pairs(shieldCache) do
-				if typeof(part) == "Instance" and part.Parent then pcall(function() part.CanCollide = v end) end
-			end
-			for part, v in pairs(wallCache) do
-				if typeof(part) == "Instance" and part.Parent then pcall(function() part.CanCollide = v end) end
-			end
-		end,
-	})
-
-	print("[Melee] complete melee HBE system loaded")
-end)
-
--- ===== [TARGET-GROUPS] Target Groups - area select within X studs ===========
--- Integrates with the main HBE: only extends hitboxes of players within the
--- configured radius (like a drag-select in studs).
-pcall(function()
-	local lPlayer = Players.LocalPlayer
-
-	-- Add controls to the HBE tab's filter section
-	filterGroupbox:AddToggle("targetGroupEnabled", { Text = "Target Groups (Radius)", Default = false,
-		Tooltip = "Only extend hitboxes of players within\nthe radius below. Like a drag-select\nbut based on distance. (Default: OFF)" })
-
-	filterGroupbox:AddSlider("targetGroupRadius", { Text = "Group Radius (studs)", Min = 5, Max = 200, Default = 30, Rounding = 1,
-		Tooltip = "Radius around you to select targets. (Default: 30)" })
-
-	filterGroupbox:AddSlider("targetGroupMax", { Text = "Max in Group", Min = 1, Max = 20, Default = 5, Rounding = 0,
-		Tooltip = "Maximum number of targets in a group. (Default: 5)" })
-
-	-- The actual filtering is handled by the existing closestTargetsOnly / extendAllowed
-	-- mechanism in runUpdatePlayers. We hook into it by modifying the extendAllowed set.
-	-- This is done by patching the update loop - see the OnChanged handlers.
-
-	Bridge:RegisterAddon("TargetGroups", { onUnload = function() end })
-	print("[Target] target groups loaded")
-end)
-
--- ===== [FIX] Head sizes disappearing / HBE not loading =====================
--- The issue: when WaitForFullChar times out or a character loads partially,
--- the head (or other parts) never get setup() called, so they're never
--- tracked and never extended. This fix adds a retry mechanism.
-pcall(function()
-	local lPlayer = Players.LocalPlayer
-
-	-- Periodic check: for each tracked player, ensure all their BaseParts are hooked
-	local headFixConn = RunService.Heartbeat:Connect(function()
-		if not getgenv().FurryHBELoaded then return end
-		if tick() % 2 > 0.05 then return end -- Run every ~2 seconds
-
-		for plr, playerData in pairs(players) do
-			pcall(function()
-				local char = plr.Character
-				if not char then return end
-				-- Force an update which will call setup() on any un-hooked parts
-				if playerData.Update then
-					playerData:Update()
-				end
-			end)
-		end
-	end)
-
-	Bridge:RegisterAddon("HeadFix", {
-		onUnload = function()
-			if headFixConn then pcall(function() headFixConn:Disconnect() end) end
-		end,
-	})
-	print("[Fix] head size persistence fix loaded")
-end)
-
--- ===== [FIX] ESP names not showing without team registration ===============
--- Root cause: on Solara/DrawingFallback, the Text element has no Size set, so
--- it renders as 0x0 invisible. The fix is in the DrawingFallback.new("Text")
--- above where we added AutomaticSize = Enum.AutomaticSize.XY.
--- This additional fix ensures the text is always visible by poking the element.
-pcall(function()
-	-- Force a re-render of all ESP text elements every few seconds
-	-- This catches edge cases where the AutomaticSize didn't kick in
-	local espFixConn = RunService.Heartbeat:Connect(function()
-		if tick() % 3 > 0.05 then return end
-		for _, v in pairs(players) do
-			pcall(function()
-				if v.nameEsp and v.nameEsp.element and v.nameEsp.visible then
-					-- Poke the TextLabel to force Roblox to recalculate layout
-					local el = v.nameEsp.element
-					if el and el.Parent and el:IsA("TextLabel") then
-						el.AutomaticSize = Enum.AutomaticSize.XY
-						if el.Size == UDim2.new(0, 0, 0, 0) then
-							el.Size = UDim2.new(0, 200, 0, 20) -- Fallback size
-						end
-					end
-				end
-				-- Same for box
-				if v.boxEsp and v.boxEsp.element and v.boxEsp.visible then
-					local el = v.boxEsp.element
-					if el and el.Parent and el:IsA("Frame") then
-						-- Ensure the UIStroke exists
-						if not el:FindFirstChildWhichIsA("UIStroke") then
-							local stroke = Instance.new("UIStroke")
-							stroke.Color = v.boxEsp.color or Color3.fromRGB(255, 255, 255)
-							stroke.Thickness = 1
-							stroke.Parent = el
-						end
-					end
-				end
-			end)
-		end
-	end)
-
-	Bridge:RegisterAddon("ESPFix", {
-		onUnload = function()
-			if espFixConn then pcall(function() espFixConn:Disconnect() end) end
-		end,
-	})
-	print("[Fix] ESP text/box visibility fix loaded")
-end)
 -- Wrap long tooltips so they don't run off-screen. SAFE this time: it's deferred
 -- and pcall'd, and only sets TextWrapped on already-built hidden tooltip labels --
 -- it never replaces Library.AddToolTip (that's what broke the UI build before).
