@@ -232,14 +232,8 @@ local DrawingAvailable = pcall(function()
 	if probe.Destroy then probe:Destroy() elseif probe.Remove then probe:Remove() end
 end)
 if DrawingAvailable then
-	-- Use native Drawing, wrapped so :Remove() works on Potassium (which only has :Destroy())
-	local _RealDrawNew = Drawing.new
-	DrawingFallback.new = function(drawType)
-		local obj = _RealDrawNew(drawType)
-		if not obj.Remove and obj.Destroy then obj.Remove = obj.Destroy end
-		if not obj.Destroy and obj.Remove then obj.Destroy = obj.Remove end
-		return obj
-	end
+	-- Use native Drawing directly — no wrapper, no proxy, no mutation.
+	DrawingFallback.new = Drawing.new
 else
 	-- Use GUI fallback: map public PascalCase props to internal lowercase storage.
 	-- These metamethods go on DrawingFallback itself, which is the metatable of every
@@ -268,6 +262,16 @@ else
 			return
 		end
 		rawset(self, key, value)
+	end
+end
+
+-- Safe drawing removal: Potassium uses :Destroy(), other executors use :Remove()
+local function safeRemoveDrawing(obj)
+	if not obj then return end
+	if type(obj.Destroy) == "function" then
+		pcall(function() obj:Destroy() end)
+	elseif type(obj.Remove) == "function" then
+		pcall(function() obj:Remove() end)
 	end
 end
 
@@ -531,15 +535,15 @@ local function cleanup()
 			pcall(function() playerData:DeleteVisuals() end)
 		end
 	end
-	fovCircle:Remove()
+	safeRemoveDrawing(fovCircle)
 	
 	-- Cleanup part scanner
 	if partScannerHighlight then
 		pcall(function() partScannerHighlight:Destroy() end)
 		partScannerHighlight = nil
 	end
-	partScannerProgressCircle:Remove()
-	if partScannerFillCircle then partScannerFillCircle:Remove() end
+	safeRemoveDrawing(partScannerProgressCircle)
+	if partScannerFillCircle then safeRemoveDrawing(partScannerFillCircle) end
 	RunService:UnbindFromRenderStep("partScanner")
 	if resetWorldParts then resetWorldParts() end
 
@@ -749,8 +753,8 @@ do
 		onUnload = function()
 			pcall(stop)
 			pcall(function() RunService:UnbindFromRenderStep("FurryHBE_HoldPick") end)
-			pcall(function() ring:Remove() end)
-			pcall(function() fill:Remove() end)
+			safeRemoveDrawing(ring)
+			safeRemoveDrawing(fill)
 		end,
 	})
 end
@@ -858,7 +862,7 @@ hitboxGroupbox:AddToggle("outlineMode", { Text = "Outline Only", Default = false
 hitboxGroupbox:AddLabel("Outline Color"):AddColorPicker("outlineColor", { Title = "Outline Color", Default = Color3.fromRGB(255, 0, 0) })
 hitboxGroupbox:AddSlider("outlineTransparency", { Text = "Outline Transparency", Min = 0, Max = 1, Default = 0, Rounding = 2, Tooltip = "Transparency of the outline lines (0 = solid). (Default: 0)" }):OnChanged(updatePlayers)
 hitboxGroupbox:AddInput("customPartName", { Text = "Custom Part Name", Default = "HeadHB", Tooltip = "Name for custom body part matching. (Default: HeadHB)" }):OnChanged(updatePlayers)
-hitboxGroupbox:AddDropdown("extenderPartList", { Text = "Body Parts", AllowNull = true, Multi = true, Values = table.clone(DEFAULT_BODY_PARTS), Default = "Head", Tooltip = "Select which body parts to extend. (Default: Head)" }):OnChanged(updatePlayers)
+hitboxGroupbox:AddDropdown("extenderPartList", { Text = "Body Parts", AllowNull = true, Multi = true, Values = table.clone(DEFAULT_BODY_PARTS), Default = { "Head" }, Tooltip = "Select which body parts to extend. (Default: Head)" }):OnChanged(updatePlayers)
 
 -- Part-specific sizing
 hitboxGroupbox:AddToggle("partSpecificSizing", { Text = "Part-Specific Sizing", Default = false, Tooltip = "Enable different sizes for different body parts. (Default: OFF)" }):OnChanged(updatePlayers)
@@ -2509,8 +2513,9 @@ function addPlayer(player)
 						nameEsp.Text = nameEsp.Text .. " [" .. math.floor(distance) .. "m]"
 					end
 					
-					if Toggles.espNameUseTeamColor.Value then
-						nameEsp.Color = player.TeamColor.Color
+					if Toggles.espNameUseTeamColor.Value and player.Team then
+						local ok, tc = pcall(function() return player.TeamColor.Color end)
+						nameEsp.Color = ok and tc or Options.espNameColor1.Value
 					else
 						nameEsp.Color = Options.espNameColor1.Value
 					end
@@ -2633,7 +2638,7 @@ function addPlayer(player)
 				-- Skeleton ESP (connects bones; missing parts are skipped)
 				if Toggles.espSkeletonToggled.Value then
 					local idx = 0
-					local col = flashCol or (Toggles.espNameUseTeamColor.Value and player.TeamColor.Color or Options.espNameColor1.Value)
+					local col = flashCol or ((Toggles.espNameUseTeamColor.Value and player.Team and pcall(function() return player.TeamColor.Color end) and player.TeamColor.Color) or Options.espNameColor1.Value)
 					for _, bone in ipairs(SKELETON_BONES) do
 						local a = playerChar:FindFirstChild(bone[1])
 						local b = playerChar:FindFirstChild(bone[2])
@@ -2677,7 +2682,7 @@ function addPlayer(player)
 					local markerPos = center + dir * (math.min(vp.X, vp.Y) / 2 - 40)
 					offscreenMarker.Size = Vector2.new(10, 10)
 					offscreenMarker.Position = Vector2.new(markerPos.X - 5, markerPos.Y - 5)
-					offscreenMarker.Color = flashCol or (Toggles.espNameUseTeamColor.Value and player.TeamColor.Color or Options.espNameColor1.Value)
+					offscreenMarker.Color = flashCol or ((Toggles.espNameUseTeamColor.Value and player.Team and pcall(function() return player.TeamColor.Color end) and player.TeamColor.Color) or Options.espNameColor1.Value)
 					offscreenMarker.Visible = true
 				else
 					offscreenMarker.Visible = false
@@ -2693,9 +2698,11 @@ function addPlayer(player)
 		-- Chams (independently suppressed by Streamer Mode's hideChams flag)
 		if Toggles.espHighlightToggled.Value and not Bridge.Streamer.hideChams then
 			chams.Adornee = playerChar
-			if Toggles.espHighlightUseTeamColor.Value then
-				chams.FillColor = player.TeamColor.Color
-				chams.OutlineColor = player.TeamColor.Color
+			if Toggles.espHighlightUseTeamColor.Value and player.Team then
+				local ok, tc = pcall(function() return player.TeamColor.Color end)
+				local c = ok and tc or Options.espHighlightColor1.Value
+				chams.FillColor = c
+				chams.OutlineColor = c
 			else
 				chams.FillColor = Options.espHighlightColor1.Value
 				chams.OutlineColor = Options.espHighlightColor2.Value
@@ -2716,14 +2723,14 @@ function addPlayer(player)
 	end
 
 	function playerIdx:DeleteVisuals()
-		nameEsp:Remove()
-		teamEsp:Remove()
-		healthBar:Remove()
-		healthText:Remove()
-		offscreenMarker:Remove()
-		boxEsp:Remove()
-		tracer:Remove()
-		for _, ln in ipairs(skeletonLines) do ln:Remove() end
+		safeRemoveDrawing(nameEsp)
+		safeRemoveDrawing(teamEsp)
+		safeRemoveDrawing(healthBar)
+		safeRemoveDrawing(healthText)
+		safeRemoveDrawing(offscreenMarker)
+		safeRemoveDrawing(boxEsp)
+		safeRemoveDrawing(tracer)
+		for _, ln in ipairs(skeletonLines) do safeRemoveDrawing(ln) end
 		chams:Destroy()
 	end
 
@@ -3122,7 +3129,7 @@ pcall(function()
 	hbeGroup:AddToggle("precisionCollisions", { Text = "Keep Collisions", Default = false, Tooltip = "Leave the extended part collidable (off = restore original CanCollide). (Default: OFF)" })
 	hbeGroup:AddToggle("precisionSmooth", { Text = "Smooth Transitions", Default = false, Tooltip = "Interpolate size changes instead of snapping. (Default: OFF)" })
 	hbeGroup:AddSlider("precisionSmoothSpeed", { Text = "Smooth Speed", Min = 0.05, Max = 1, Default = 0.3, Rounding = 2, Tooltip = "How fast the size eases toward the target (1 = instant). (Default: 0.3)" })
-	hbeGroup:AddDropdown("precisionParts", { Text = "Parts to Extend", AllowNull = true, Multi = true, Values = { "HumanoidRootPart", "Head", "Torso", "UpperTorso", "LowerTorso", "Left Arm", "Right Arm", "Left Leg", "Right Leg" }, Default = "HumanoidRootPart", Tooltip = "Which of the target's parts to extend. (Default: HumanoidRootPart)" })
+	hbeGroup:AddDropdown("precisionParts", { Text = "Parts to Extend", AllowNull = true, Multi = true, Values = { "HumanoidRootPart", "Head", "Torso", "UpperTorso", "LowerTorso", "Left Arm", "Right Arm", "Left Leg", "Right Leg" }, Default = { "HumanoidRootPart" }, Tooltip = "Which of the target's parts to extend. (Default: HumanoidRootPart)" })
 
 	targetGroup:AddToggle("autoSelectTarget", { Text = "Auto-Select Target", Default = true, Tooltip = "Automatically lock onto the nearest visible player. (Default: ON)" })
 	targetGroup:AddSlider("selectionRadius", { Text = "Selection Radius (studs)", Min = 5, Max = 1000, Default = 150, Rounding = 1, Tooltip = "Max distance for auto-selection. (Default: 150)" })
@@ -3494,9 +3501,9 @@ pcall(function()
 			pcall(releaseClaim)
 			if hbConn then pcall(function() hbConn:Disconnect() end) end
 			pcall(function() RunService:UnbindFromRenderStep("PrecisionVisuals") end)
-			pcall(function() visualZone:Remove() end)
-			pcall(function() proximityLabel:Remove() end)
-			pcall(function() targetNameLabel:Remove() end)
+			safeRemoveDrawing(visualZone)
+			safeRemoveDrawing(proximityLabel)
+			safeRemoveDrawing(targetNameLabel)
 		end,
 	})
 
@@ -3644,38 +3651,49 @@ pcall(function()
 		local settle = (Options.teleportSitTime and Options.teleportSitTime.Value) or 0.3
 		local dest = CFrame.new(targetPosition)
 		-- Pre-stream the destination so StreamingEnabled games don't drop into a
-		-- "Gameplay Paused" while the area loads in around you after the hop. Yields
-		-- until the region is ready (~2s cap); pcall'd so it's a no-op where unsupported.
+		-- "Gameplay Paused" while the area loads in around you after the hop.
 		if (Toggles.tpPreload == nil) or Toggles.tpPreload.Value then
 			pcall(function() lPlayer:RequestStreamAroundAsync(targetPosition, 2) end)
 		end
 		if Toggles.useSitTeleport.Value then
-			local seat = Instance.new("Part")
+			-- OVERHAUL: Use a REAL Seat instance so the server registers the sit.
+			-- The character is anchored to the seat, so moving the seat moves the
+			-- player without the server's character controller fighting it.
+			-- 1) Create an actual Seat at your current position
+			local seat = Instance.new("Seat")
 			seat.Name = "FurryHBE_TempSeat"
 			seat.Size = Vector3.new(2, 1, 2)
 			seat.Anchored = true
 			seat.CanCollide = false
 			seat.Transparency = 1
-			seat.CFrame = root.CFrame - Vector3.new(0, 3, 0)
+			seat.CFrame = root.CFrame + Vector3.new(0, -3, 0)
 			seat.Parent = Workspace
 			activeTempSeats[seat] = true
-			humanoid.Sit = true
+
+			-- 2) Force the humanoid into the seat via Seat:Sit()
+			seat:Sit(humanoid)
 			task.wait(settle)
-			if Toggles.desyncFlash.Value then
-				root.CFrame = CFrame.new(99999, 99999, 99999)
-				task.wait(0.05)
-			end
-			root.CFrame = dest * CFrame.new(0, 3, 0)
+
+			-- 3) Move the SEAT (with the player attached) to the destination.
+			-- Since the player is occupying the seat, the server sees the player
+			-- as seated and doesn't rubberband them back.
+			seat.CFrame = dest + Vector3.new(0, -1, 0)
 			task.wait(settle)
+
+			-- 4) Unseat and cleanup — small hop to land cleanly
 			humanoid.Sit = false
+			humanoid.Jump = true
+			task.wait(0.1)
 			activeTempSeats[seat] = nil
 			pcall(function() seat:Destroy() end)
-			root.CFrame = dest
-		else
-			if Toggles.desyncFlash.Value then
-				root.CFrame = CFrame.new(99999, 99999, 99999)
-				task.wait(0.05)
+
+			-- 5) Final position correction after unseating
+			task.wait(0.05)
+			if root.Parent then
+				root.CFrame = dest
 			end
+		else
+			-- Direct teleport (no seat, may rubberband in some games)
 			root.CFrame = dest
 		end
 	end
@@ -4585,7 +4603,7 @@ pcall(function()
 	Bridge:RegisterAddon("VehicleESP", { onUnload = function()
 		pcall(function() RunService:UnbindFromRenderStep("FurryHBE_VehicleESP") end)
 		if autoScanConn then pcall(function() autoScanConn:Disconnect() end) end
-		for _, t in ipairs(pool) do pcall(function() t:Remove() end) end
+		for _, t in ipairs(pool) do safeRemoveDrawing(t) end
 	end })
 	print("[Content] streaming region active")
 end)
@@ -5052,9 +5070,9 @@ task.spawn(function()
 		local sg = Library.ScreenGui
 		if not sg then return end
 		for _, d in ipairs(sg:GetDescendants()) do
-			if d:IsA("TextLabel") and type(d.Text) == "string" and #d.Text > 50 and not d.Text:find("\n") then
+			if d:IsA("TextLabel") and type(d.Text) == "string" and #d.Text > 30 then
 				-- Tooltips live inside a hidden frame (control labels are short, so the
-				-- >50 length filter skips them). Only wrap those.
+				-- >30 length filter skips them). Only wrap those.
 				local insideHidden, p = false, d.Parent
 				for _ = 1, 6 do
 					if not p or p == sg then break end
@@ -5064,9 +5082,8 @@ task.spawn(function()
 				if insideHidden then
 					d.TextWrapped = true
 					d.AutomaticSize = Enum.AutomaticSize.Y
-					if d.Size.X.Scale > 0 or d.Size.X.Offset > 300 then
-						d.Size = UDim2.new(0, 280, d.Size.Y.Scale, math.max(d.Size.Y.Offset, 16))
-					end
+					-- Force a readable width so text doesn't clip
+					d.Size = UDim2.new(0, 280, d.Size.Y.Scale, math.max(d.Size.Y.Offset, 16))
 				end
 			end
 		end
