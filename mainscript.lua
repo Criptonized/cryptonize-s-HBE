@@ -688,6 +688,99 @@ function Bridge:DisconnectAll()
 	self.Connections = {}
 end
 
+-- ===== Plugin system (compartmentalization / plug-and-play) ================
+-- A plugin is a module string that returns { name, tab, requires, load(ctx), unload }.
+-- EnablePlugin loadstrings it and calls load(ctx); UnloadPlugin runs unload + the ctx
+-- teardown (disconnects every connection, destroys every tracked instance/groupbox,
+-- clears its control keys) and drops all refs so the code GCs. See plugin draft .md.
+Bridge.Plugins = {}        -- [name] = { mod, ctx, loaded }
+Bridge.PluginSources = {}  -- [name] = { source=, tab=, desc= }
+Bridge.Tabs = {}
+function Bridge:GetOrMakeTab(name)
+	if not self.Tabs[name] then
+		local mw = getgenv().mainWindow
+		if mw then self.Tabs[name] = mw:AddTab(name) end
+	end
+	return self.Tabs[name]
+end
+function Bridge:NewContext(name, tab)
+	local C = { _conns = {}, _insts = {}, _gbs = {}, _keys = {}, tab = tab, Bridge = self }
+	function C:Connect(signal, fn)
+		local ok, c = pcall(function() return signal:Connect(fn) end)
+		if ok and c then table.insert(self._conns, c) end
+		return c
+	end
+	function C:Track(inst) table.insert(self._insts, inst); return inst end
+	function C:Groupbox(title, side)
+		local g = (side == "right") and self.tab:AddRightGroupbox(title) or self.tab:AddLeftGroupbox(title)
+		table.insert(self._gbs, g)
+		return g
+	end
+	function C:Control(key) table.insert(self._keys, key) end
+	function C:teardown()
+		for _, c in ipairs(self._conns) do pcall(function() c:Disconnect() end) end
+		for _, i in ipairs(self._insts) do pcall(function() if i.Destroy then i:Destroy() elseif i.Remove then i:Remove() end end) end
+		-- Best-effort destroy of each groupbox's underlying GUI (LinoriaLib has no
+		-- native control-removal, so we probe common container fields).
+		for _, g in ipairs(self._gbs) do
+			pcall(function()
+				for _, k in ipairs({ "Container", "Holder", "ScrollFrame", "Instance" }) do
+					local inst = rawget(g, k)
+					if typeof(inst) == "Instance" then inst:Destroy() end
+				end
+			end)
+		end
+		for _, k in ipairs(self._keys) do pcall(function() rawset(Toggles, k, nil); rawset(Options, k, nil) end) end
+		self._conns, self._insts, self._gbs, self._keys = {}, {}, {}, {}
+	end
+	return C
+end
+function Bridge:RegisterPluginSource(name, info) self.PluginSources[name] = info end
+-- Base URL for external plugin files (set getgenv().FurryHBE_PluginBase to your
+-- GitHub raw folder). EnablePlugin fetches <base>/<file> for plugins with no inline
+-- source. Per-plugin info.url / info.file / info.source all override.
+Bridge.PluginBase = getgenv().FurryHBE_PluginBase or ""
+function Bridge:EnablePlugin(name)
+	local entry = self.Plugins[name]
+	if entry and entry.loaded then return true end
+	local info = self.PluginSources[name]
+	if not info then return false, "no source registered" end
+	-- Resolve the source: inline string, explicit url, local file, or PluginBase/<file>.
+	local src = info.source
+	if not src then
+		local url = info.url
+		if (not url or url == "") and self.PluginBase ~= "" then
+			url = self.PluginBase:gsub("/$", "") .. "/" .. (info.file or (name:lower() .. ".lua"))
+		end
+		if info.path and isfile and readfile and isfile(info.path) then
+			src = readfile(info.path)
+		elseif url and url ~= "" then
+			local ok, body = pcall(function() return game:HttpGet(url) end)
+			if ok and type(body) == "string" then src = body end
+		end
+	end
+	if not src then return false, "no source/url (set getgenv().FurryHBE_PluginBase)" end
+	local fn, cerr = loadstring(src, "=" .. name)
+	if not fn then return false, "compile: " .. tostring(cerr) end
+	local ok, mod = pcall(fn)
+	if not ok or type(mod) ~= "table" or type(mod.load) ~= "function" then return false, "bad module: " .. tostring(mod) end
+	local tab = self:GetOrMakeTab(mod.tab or name)
+	if not tab then return false, "no tab" end
+	local ctx = self:NewContext(name, tab)
+	local ok2, err = pcall(mod.load, ctx)
+	if not ok2 then pcall(function() ctx:teardown() end); return false, "load: " .. tostring(err) end
+	self.Plugins[name] = { mod = mod, ctx = ctx, loaded = true }
+	return true
+end
+function Bridge:UnloadPlugin(name)
+	local entry = self.Plugins[name]
+	if not (entry and entry.loaded) then return end
+	if entry.mod and entry.mod.unload then pcall(entry.mod.unload) end
+	pcall(function() entry.ctx:teardown() end)
+	self.Plugins[name] = { loaded = false }   -- drop mod + ctx refs so the chunk GCs
+	pcall(collectgarbage)
+end
+
 getgenv().FurryHBE = Bridge
 -- Convenience aliases some add-ons expect at the top level.
 getgenv().Library = Library
@@ -1096,6 +1189,26 @@ espFilterGroupbox:AddButton("Test ESP Backends (3s)", function()
 		for _, o in ipairs(made) do pcall(function() if o.Remove then o:Remove() elseif o.Destroy then o:Destroy() end end) end
 	end)
 end):AddToolTip("Paint a native + a GUI test marker so you can see which backend renders on your executor.")
+
+-- Enemy / Ally team colours (red = enemy, green = ally), with configurable team lists.
+local espTeamGroupbox = espTab:AddLeftGroupbox("Enemy / Ally Colors")
+espTeamGroupbox:AddToggle("espTeamColors", { Text = "Enemy/Ally Colors", Default = false, Tooltip = "Colour ESP by relationship -- enemies red, allies green --\noverriding the normal ESP colour. (Default: OFF)" }):AddColorPicker("espEnemyColor", { Title = "Enemy", Default = Color3.fromRGB(255, 60, 60) }):AddColorPicker("espAllyColor", { Title = "Ally", Default = Color3.fromRGB(60, 255, 90) })
+espTeamGroupbox:AddLabel("Neutral Color"):AddColorPicker("espNeutralColor", { Title = "Neutral", Default = Color3.fromRGB(235, 235, 235) })
+espTeamGroupbox:AddToggle("espOwnTeamFriendly", { Text = "Own Team = Ally", Default = true, Tooltip = "Treat your own team as allies and everyone else as enemies\nwhen team info exists. (Default: ON)" })
+espTeamGroupbox:AddDropdown("espFriendlyTeams", { Text = "Friendly Teams", Values = {}, Multi = true, AllowNull = true, Tooltip = "Teams always shown as allies (green)." })
+espTeamGroupbox:AddDropdown("espEnemyTeams", { Text = "Enemy Teams", Values = {}, Multi = true, AllowNull = true, Tooltip = "Teams always shown as enemies (red)." })
+local function refreshEspTeams()
+	local names = {}
+	pcall(function() for _, t in ipairs(game:GetService("Teams"):GetChildren()) do names[#names + 1] = t.Name end end)
+	for _, key in ipairs({ "espFriendlyTeams", "espEnemyTeams" }) do
+		if Options[key] then Options[key].Values = names; pcall(function() Options[key]:SetValues() end) end
+	end
+	return #names
+end
+espTeamGroupbox:AddButton("Refresh Teams", function()
+	Library:Notify("Teams: " .. refreshEspTeams() .. " found")
+end):AddToolTip("Populate the team lists from the game's Teams.")
+pcall(refreshEspTeams)
 
 -- Whitelist Tab
 local whitelistTab = mainWindow:AddTab("Whitelist")
@@ -1732,7 +1845,11 @@ local function updateStatus()
 		if Toggles.randomizationToggled and Toggles.randomizationToggled.Value and not (Toggles.smartJitter and Toggles.smartJitter.Value) then r = r + 1 end
 		if Options.updateRate and Options.updateRate.Value > 30 then r = r + 1 end
 		if not (Options.maxPlausibleMult and Options.maxPlausibleMult.Value > 0) then r = r + 1 end
-		riskLabel:SetText("Detection risk: " .. (r <= 2 and "Low" or (r <= 4 and "Medium" or "High")))
+		-- Phantom Recon (Tier 4): a detected anti-cheat raises the risk floor.
+		local b = getgenv().FurryHBE
+		local acTag = ""
+		if b and b.DeepScan and b.DeepScan.acActive then r = r + 3; acTag = " [AC detected]" end
+		riskLabel:SetText("Detection risk: " .. (r <= 2 and "Low" or (r <= 4 and "Medium" or "High")) .. acTag)
 	end)
 end
 
@@ -1746,6 +1863,32 @@ local function isPriority(player)
 	if not Options.priorityPlayerList then return false end
 	return table.find(Options.priorityPlayerList:GetActiveValues(), player.Name) ~= nil
 end
+
+-- Enemy/Ally ESP colour: explicit Friendly/Enemy team lists win; otherwise (if
+-- "Own Team = Ally" is on and team info exists) your team is green and the rest red;
+-- else neutral. Returns a Color3 for ESP to override the default with.
+local function relationshipColor(player)
+	local enemyC   = (Options.espEnemyColor and Options.espEnemyColor.Value) or Color3.fromRGB(255, 60, 60)
+	local allyC    = (Options.espAllyColor and Options.espAllyColor.Value) or Color3.fromRGB(60, 255, 90)
+	local neutralC = (Options.espNeutralColor and Options.espNeutralColor.Value) or Color3.fromRGB(255, 255, 255)
+	local teamName = player.Team and player.Team.Name or nil
+	if teamName and Options.espFriendlyTeams and table.find(Options.espFriendlyTeams:GetActiveValues(), teamName) then return allyC end
+	if teamName and Options.espEnemyTeams and table.find(Options.espEnemyTeams:GetActiveValues(), teamName) then return enemyC end
+	if Toggles.espOwnTeamFriendly and Toggles.espOwnTeamFriendly.Value then
+		local ok, same = pcall(function()
+			if lPlayer.Team ~= nil or player.Team ~= nil then return lPlayer.Team == player.Team end
+			return lPlayer.TeamColor == player.TeamColor
+		end)
+		if ok and same then return allyC end
+		if lPlayer.Team ~= nil or player.Team ~= nil then return enemyC end
+	end
+	return neutralC
+end
+
+-- Expose core helpers on the Bridge so external (loadstring'd) plugins -- which can
+-- only see globals, not these locals -- can reuse them.
+Bridge.getSafeGuiParent = getSafeGuiParent
+Bridge.relationshipColor = relationshipColor
 
 function getDistanceToPlayer(playerChar)
 	if not playerChar then return math.huge end
@@ -2644,6 +2787,9 @@ function addPlayer(player)
 			local spd = (Options.espRainbowSpeed and Options.espRainbowSpeed.Value) or 0.7
 			flashCol = Color3.fromHSV((tick() * spd) % 1, 1, 1)
 		end
+		-- Enemy/Ally team colour (red enemy, green ally). flashCol still wins for emphasis.
+		local relCol = nil
+		if Toggles.espTeamColors and Toggles.espTeamColors.Value then relCol = relationshipColor(player) end
 		-- Line thickness + distance fade (fade is native-Drawing only; harmless on the GUI fallback).
 		local thick = (Options.espThickness and Options.espThickness.Value) or 1
 		local fade = 0
@@ -2683,7 +2829,7 @@ function addPlayer(player)
 					else
 						nameEsp.Color = Options.espNameColor1.Value
 					end
-					nameEsp.Color = flashCol or nameEsp.Color
+					nameEsp.Color = flashCol or relCol or nameEsp.Color
 						pcall(function() nameEsp.Transparency = fade end)
 						nameEsp.OutlineColor = Options.espNameColor2.Value
 					nameEsp.Position = Vector2.new(pos.X, pos.Y)
@@ -2739,11 +2885,15 @@ function addPlayer(player)
 					local humanoid = playerChar:FindFirstChildWhichIsA("Humanoid")
 					if humanoid and humanoid.MaxHealth > 0 then
 						local pct = humanoid.Health / humanoid.MaxHealth
-						healthText.Text = tostring(math.floor(humanoid.Health))
-						healthText.Color = Color3.fromRGB(math.floor(255 * (1 - pct)), math.floor(255 * pct), 0)
+						-- "cur/max" format (e.g. 33/100) like the reference ESP.
+						healthText.Text = math.floor(humanoid.Health) .. "/" .. math.floor(humanoid.MaxHealth)
+						-- Enemy/Ally colour when team-colours on, else the HP gradient.
+						healthText.Color = relCol or Color3.fromRGB(math.floor(255 * (1 - pct)), math.floor(255 * pct), 0)
 						healthText.OutlineColor = Color3.fromRGB(0, 0, 0)
 						healthText.Size = 13
-						healthText.Position = Vector2.new(pos.X + 28, pos.Y - 24)
+						healthText.Center = true
+						-- Centered just above the name, matching the reference layout.
+						healthText.Position = Vector2.new(pos.X, pos.Y - ((Options.espNameSize and Options.espNameSize.Value or 14) + 6))
 						healthText.Visible = true
 					else
 						healthText.Visible = false
@@ -2776,7 +2926,7 @@ function addPlayer(player)
 						local width = height * 0.5
 						boxEsp.Size = Vector2.new(width, height)
 						boxEsp.Position = Vector2.new(pos.X - width / 2, pos.Y - height / 2)
-						boxEsp.Color = flashCol or Options.espNameColor1.Value
+						boxEsp.Color = flashCol or relCol or Options.espNameColor1.Value
 						boxEsp.Thickness = thick
 						pcall(function() boxEsp.Transparency = fade end)
 						boxEsp.Visible = true
@@ -2791,7 +2941,7 @@ function addPlayer(player)
 				if Toggles.espTracerToggled.Value then
 					tracer.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
 					tracer.To = Vector2.new(pos.X, pos.Y)
-					tracer.Color = flashCol or Options.espTracerColor.Value
+					tracer.Color = flashCol or relCol or Options.espTracerColor.Value
 					tracer.Thickness = thick
 					pcall(function() tracer.Transparency = fade end)
 					tracer.Visible = true
@@ -2871,6 +3021,8 @@ function addPlayer(player)
 				chams.FillColor = Options.espHighlightColor1.Value
 				chams.OutlineColor = Options.espHighlightColor2.Value
 			end
+			-- Enemy/Ally colours override the chams fill+outline (red enemy / green ally).
+			if relCol then chams.FillColor = relCol; chams.OutlineColor = relCol end
 			if flashCol then chams.FillColor = flashCol; chams.OutlineColor = flashCol end
 			chams.DepthMode = Enum.HighlightDepthMode[Options.espHighlightDepthMode.Value]
 			chams.FillTransparency = Options.espHighlightFillTransparency.Value
@@ -3269,481 +3421,6 @@ end
 --  They use the locals already in scope (Bridge, Library, mainWindow,
 --  DrawingFallback, Players/RunService/Workspace) plus the global Toggles/Options.
 -- ============================================================================
-
--- ----- Precision HBE (standalone single-target extender) --------------------
-pcall(function()
-	local HttpService = game:GetService("HttpService")
-	local cam     = Workspace.CurrentCamera
-	local lPlayer = Players.LocalPlayer
-	local CFG_FILE = "FurryHBE_Precision.json"
-
-	local precisionTab = mainWindow:AddTab("Precision")
-
-	local hbeGroup      = precisionTab:AddLeftGroupbox("Precision HBE")
-	local targetGroup   = precisionTab:AddLeftGroupbox("Target Selection")
-	local antiGroup     = precisionTab:AddLeftGroupbox("Filters / Anti-Detection")
-	local scalingGroup  = precisionTab:AddRightGroupbox("Dynamic Scaling")
-	local zoneGroup     = precisionTab:AddRightGroupbox("Visual Zone")
-	local debugGroup    = precisionTab:AddRightGroupbox("Info")
-	local cfgGroup      = precisionTab:AddRightGroupbox("Config")
-
-	hbeGroup:AddToggle("precisionEnabled", { Text = "Enable Precision HBE", Default = false, Tooltip = "Standalone single-target hitbox extender.\nWorks even with the main Master Toggle off. (Default: OFF)" })
-	hbeGroup:AddToggle("precisionExclusive", { Text = "Exclusive Mode", Default = false, Tooltip = "Also switch the main mass-extender OFF while\nPrecision is active. (Claims already stop the two\nfighting over your target, so this is optional.) (Default: OFF)" })
-	hbeGroup:AddSlider("precisionHitboxSize", { Text = "Base Hitbox Size", Min = 2, Max = 100, Default = 12, Rounding = 1, Tooltip = "Base size applied to the target's parts (before dynamic scaling). (Default: 12)" })
-	hbeGroup:AddSlider("precisionTransparency", { Text = "Transparency", Min = 0, Max = 1, Default = 0.6, Rounding = 2, Tooltip = "Transparency of the extended hitbox (0 = solid, 1 = invisible). (Default: 0.6)" })
-	hbeGroup:AddDropdown("precisionShape", { Text = "Hitbox Shape", AllowNull = false, Multi = false, Values = { "Cube", "Flat (disk)", "Tall (pillar)" }, Default = "Cube", Tooltip = "Cube = uniform; Flat = wide & short;\nTall = narrow & tall. (Default: Cube)" })
-	hbeGroup:AddToggle("precisionCollisions", { Text = "Keep Collisions", Default = false, Tooltip = "Leave the extended part collidable (off = restore original CanCollide). (Default: OFF)" })
-	hbeGroup:AddToggle("precisionSmooth", { Text = "Smooth Transitions", Default = false, Tooltip = "Interpolate size changes instead of snapping. (Default: OFF)" })
-	hbeGroup:AddSlider("precisionSmoothSpeed", { Text = "Smooth Speed", Min = 0.05, Max = 1, Default = 0.3, Rounding = 2, Tooltip = "How fast the size eases toward the target (1 = instant). (Default: 0.3)" })
-	-- Default is Head (NOT HumanoidRootPart). Resizing a target's HumanoidRootPart
-	-- -- the part that drives their character -- makes them freeze/stutter in place
-	-- on your screen, which is the "janky frozen target" bug. Head extension (what
-	-- the main extender uses) does not freeze them. Pick HRP only if you accept that.
-	hbeGroup:AddDropdown("precisionParts", { Text = "Parts to Extend", AllowNull = true, Multi = true, Values = { "HumanoidRootPart", "Head", "Torso", "UpperTorso", "LowerTorso", "Left Arm", "Right Arm", "Left Leg", "Right Leg" }, Default = { "Head" }, Tooltip = "Which of the target's parts to extend.\nWARNING: HumanoidRootPart freezes the target on\nyour screen -- prefer Head/Torso. (Default: Head)" })
-
-	targetGroup:AddToggle("autoSelectTarget", { Text = "Auto-Select Target", Default = true, Tooltip = "Automatically lock onto a target using the Resolver below. (Default: ON)" })
-	targetGroup:AddDropdown("precisionResolver", { Text = "Resolver", Values = { "Closest to Crosshair", "Closest Distance", "Lowest Health" }, Default = "Closest to Crosshair", Multi = false, AllowNull = false, Tooltip = "F11: how Auto-Select ranks targets.\nCrosshair = nearest to your aim; Distance = nearest in 3D;\nLowest Health = easiest kill. (Default: Closest to Crosshair)" })
-	targetGroup:AddSlider("precisionLeadTime", { Text = "Velocity Lead (s)", Min = 0, Max = 0.5, Default = 0, Rounding = 2, Tooltip = "F11: predict the target's position this many seconds ahead by\ntheir velocity when scoring 'Closest to Crosshair' -- helps lock\nfast movers. 0 = off. (Default: 0)" })
-	targetGroup:AddSlider("selectionRadius", { Text = "Selection Radius (studs)", Min = 5, Max = 1000, Default = 150, Rounding = 1, Tooltip = "Max distance for auto-selection. (Default: 150)" })
-	targetGroup:AddLabel("Manual Target"):AddKeyPicker("targetKeybind", { Default = "T", NoUI = true, Text = "Cycle Target" })
-
-	antiGroup:AddToggle("precisionRespectWhitelist", { Text = "Respect Whitelist", Default = true, Tooltip = "Never target players on the main script's whitelist. (Default: ON)" })
-	antiGroup:AddToggle("precisionIgnoreTeam", { Text = "Ignore Teammates", Default = false, Tooltip = "Skip players on your team (Team / TeamColor based). (Default: OFF)" })
-	antiGroup:AddToggle("precisionAutoOffDead", { Text = "Auto-Off When Dead", Default = true, Tooltip = "Stop extending while you are dead or have no character. (Default: ON)" })
-	antiGroup:AddToggle("precisionFOVGate", { Text = "FOV Gate", Default = false, Tooltip = "Only extend when the target is within the\nFOV radius of your crosshair. (Default: OFF)" })
-	antiGroup:AddSlider("precisionFOVRadius", { Text = "FOV Radius (px)", Min = 20, Max = 600, Default = 150, Rounding = 0 })
-	antiGroup:AddToggle("precisionRandomize", { Text = "Randomize Size", Default = false, Tooltip = "Add slight per-frame jitter to the hitbox size. (Default: OFF)" })
-	antiGroup:AddSlider("precisionRandomAmount", { Text = "Random Amount", Min = 0, Max = 5, Default = 1, Rounding = 1 })
-
-	scalingGroup:AddToggle("dynamicScalingEnabled", { Text = "Dynamic Distance Scaling", Default = true, Tooltip = "Scale the hitbox between Close and Far factors based on distance. (Default: ON)" })
-	scalingGroup:AddSlider("scalingCloseFactor", { Text = "Close Range Factor", Min = 0.5, Max = 3.0, Default = 1.5, Rounding = 2 })
-	scalingGroup:AddSlider("scalingFarFactor", { Text = "Far Range Factor", Min = 0.1, Max = 3.0, Default = 0.6, Rounding = 2 })
-	scalingGroup:AddSlider("scalingThreshold", { Text = "Close/Far Threshold (studs)", Min = 10, Max = 300, Default = 60, Rounding = 1 })
-
-	zoneGroup:AddToggle("showVisualZone", { Text = "Show Interaction Zone", Default = true })
-	zoneGroup:AddSlider("zoneRadius", { Text = "Zone Radius (studs)", Min = 5, Max = 100, Default = 15, Rounding = 1 })
-	zoneGroup:AddLabel("Zone Color"):AddColorPicker("zoneColor", { Title = "Zone Color", Default = Color3.fromRGB(0, 255, 255) })
-
-	debugGroup:AddToggle("showProximityLabel", { Text = "Show Proximity Label", Default = true })
-	debugGroup:AddToggle("showDistance", { Text = "Show Target Distance", Default = true })
-	local infoTargetLabel = debugGroup:AddLabel("Target: none")
-	local infoSizeLabel   = debugGroup:AddLabel("Applied size: -")
-
-	local PRECISION_KEYS = {
-		"precisionEnabled","precisionExclusive","precisionHitboxSize","precisionTransparency",
-		"precisionShape","precisionCollisions","precisionSmooth","precisionSmoothSpeed","precisionParts",
-		"autoSelectTarget","selectionRadius","precisionResolver","precisionLeadTime",
-		"precisionRespectWhitelist","precisionIgnoreTeam","precisionAutoOffDead",
-		"precisionFOVGate","precisionFOVRadius","precisionRandomize","precisionRandomAmount",
-		"dynamicScalingEnabled","scalingCloseFactor","scalingFarFactor","scalingThreshold",
-		"showVisualZone","zoneRadius","showProximityLabel","showDistance",
-	}
-	local function savePrecisionConfig()
-		if not writefile then Library:Notify("Executor has no writefile"); return end
-		local data = {}
-		for _, k in ipairs(PRECISION_KEYS) do
-			local c = Options[k] or Toggles[k]
-			if c ~= nil then data[k] = c.Value end
-		end
-		local ok = pcall(function() writefile(CFG_FILE, HttpService:JSONEncode(data)) end)
-		Library:Notify(ok and "Precision config saved" or "Save failed")
-	end
-	local function loadPrecisionConfig(notify)
-		if not (isfile and readfile and isfile(CFG_FILE)) then
-			if notify then Library:Notify("No saved Precision config") end
-			return
-		end
-		local ok, data = pcall(function() return HttpService:JSONDecode(readfile(CFG_FILE)) end)
-		if ok and type(data) == "table" then
-			for k, v in pairs(data) do
-				local c = Options[k] or Toggles[k]
-				if c then pcall(function() c:SetValue(v) end) end
-			end
-			if notify then Library:Notify("Precision config loaded") end
-		elseif notify then
-			Library:Notify("Saved config was unreadable")
-		end
-	end
-	cfgGroup:AddButton("Save Config", savePrecisionConfig):AddToolTip("Write current Precision settings to " .. CFG_FILE)
-	cfgGroup:AddButton("Load Config", function() loadPrecisionConfig(true) end):AddToolTip("Restore Precision settings from disk")
-
-	local visualZone = DrawingFallback.new("Circle")
-	visualZone.Thickness = 1; visualZone.Filled = false; visualZone.Visible = false
-	local proximityLabel = DrawingFallback.new("Text")
-	proximityLabel.Center = true; proximityLabel.Outline = true; proximityLabel.Size = 18; proximityLabel.Visible = false
-	local targetNameLabel = DrawingFallback.new("Text")
-	targetNameLabel.Center = true; targetNameLabel.Outline = true; targetNameLabel.Size = 14; targetNameLabel.Visible = false
-
-	local selectedTarget     = nil
-	local lastExtendedChar   = nil
-	local extendedParts      = {}
-	local claimedPlayer      = nil
-	local currentAppliedSize = nil
-	local lastInfoUpdate     = 0
-
-	local function claim(plr)
-		if claimedPlayer ~= plr then
-			if claimedPlayer then Bridge:ReleasePlayer(claimedPlayer) end
-			Bridge:ClaimPlayer(plr, "Precision")
-			claimedPlayer = plr
-		end
-	end
-	local function releaseClaim()
-		if claimedPlayer then Bridge:ReleasePlayer(claimedPlayer); claimedPlayer = nil end
-	end
-
-	local function restoreExtended()
-		for part, orig in pairs(extendedParts) do
-			if typeof(part) == "Instance" and part.Parent then
-				pcall(function()
-					part.Size = orig.Size; part.Transparency = orig.Transparency; part.CanCollide = orig.CanCollide
-					if orig.Massless ~= nil then part.Massless = orig.Massless end
-				end)
-			end
-			extendedParts[part] = nil
-		end
-	end
-
-	local function isLocalDead()
-		local char = lPlayer.Character
-		if not char then return true end
-		local hum = char:FindFirstChildWhichIsA("Humanoid")
-		if not hum then return true end
-		return hum.Health <= 0 or hum:GetState() == Enum.HumanoidStateType.Dead
-	end
-
-	local function targetDistance(char)
-		local node = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head")
-		local lChar = lPlayer.Character
-		local lNode = lChar and (lChar:FindFirstChild("HumanoidRootPart") or lChar:FindFirstChild("Head"))
-		if node and lNode then return (node.Position - lNode.Position).Magnitude end
-		return math.huge
-	end
-
-	local function computeSize(dist)
-		local base = Options.precisionHitboxSize.Value
-		if not Toggles.dynamicScalingEnabled.Value then return base end
-		local threshold = math.max(1, Options.scalingThreshold.Value)
-		local t = math.clamp(dist / threshold, 0, 1)
-		return base * (Options.scalingCloseFactor.Value + (Options.scalingFarFactor.Value - Options.scalingCloseFactor.Value) * t)
-	end
-
-	local function sizeVectorForShape(s)
-		local shape = Options.precisionShape and Options.precisionShape.Value or "Cube"
-		if shape == "Flat (disk)" then
-			return Vector3.new(s, math.max(1, s * 0.25), s)
-		elseif shape == "Tall (pillar)" then
-			return Vector3.new(math.max(1, s * 0.5), s * 1.5, math.max(1, s * 0.5))
-		end
-		return Vector3.new(s, s, s)
-	end
-
-	local function extendChar(char, scalar)
-		local names   = Options.precisionParts:GetActiveValues()
-		local transp  = Options.precisionTransparency.Value
-		local keepCol = Toggles.precisionCollisions.Value
-		if Toggles.precisionRandomize.Value then
-			scalar = math.max(1, scalar + (math.random() * 2 - 1) * Options.precisionRandomAmount.Value)
-		end
-		local desired = {}
-		for _, n in ipairs(names) do
-			local p = char:FindFirstChild(n)
-			if p and p:IsA("BasePart") then desired[p] = true end
-		end
-		for part, orig in pairs(extendedParts) do
-			if not desired[part] then
-				if typeof(part) == "Instance" and part.Parent then
-					pcall(function()
-						part.Size = orig.Size; part.Transparency = orig.Transparency; part.CanCollide = orig.CanCollide
-						if orig.Massless ~= nil then part.Massless = orig.Massless end
-					end)
-				end
-				extendedParts[part] = nil
-			end
-		end
-		for part in pairs(desired) do
-			local e = extendedParts[part]
-			if not e then
-				-- Capture the TRUE originals BEFORE we ever resize this part, so a
-				-- later restore returns it exactly (and never stores an already-
-				-- extended size as the "original"). (precision freeze fix)
-				e = { Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide, Massless = part.Massless, Cur = scalar }
-				extendedParts[part] = e
-			end
-			local applied = scalar
-			if Toggles.precisionSmooth.Value then
-				e.Cur = e.Cur + (scalar - e.Cur) * Options.precisionSmoothSpeed.Value
-				applied = e.Cur
-			else
-				e.Cur = scalar
-			end
-			pcall(function()
-				part.Size = sizeVectorForShape(applied)
-				part.Transparency = transp
-				part.CanCollide = keepCol and true or e.CanCollide
-				-- Massless keeps the enlarged hitbox from shifting the target's centre
-				-- of mass, which is what made them stagger/freeze in place. Never make
-				-- the assembly root (HumanoidRootPart) massless. (precision freeze fix)
-				if part.Name ~= "HumanoidRootPart" then part.Massless = true end
-			end)
-		end
-	end
-
-	local function passesFilters(plr, char)
-		if Toggles.precisionRespectWhitelist.Value and Options.whitelistPlayerList then
-			if table.find(Options.whitelistPlayerList:GetActiveValues(), plr.Name) then return false end
-		end
-		if Toggles.precisionIgnoreTeam.Value then
-			local ok, same = pcall(function()
-				if lPlayer.Team ~= nil or plr.Team ~= nil then return lPlayer.Team == plr.Team end
-				return lPlayer.TeamColor == plr.TeamColor
-			end)
-			if ok and same then return false end
-		end
-		if Toggles.precisionFOVGate.Value then
-			local head = char:FindFirstChild("Head")
-			if not head then return false end
-			local p, on = cam:WorldToViewportPoint(head.Position)
-			if not on then return false end
-			local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
-			if (Vector2.new(p.X, p.Y) - center).Magnitude > Options.precisionFOVRadius.Value then return false end
-		end
-		return true
-	end
-
-	-- Predict a part's position `lead` seconds ahead using its velocity (F11).
-	local function predictedPos(part)
-		local lead = (Options.precisionLeadTime and Options.precisionLeadTime.Value) or 0
-		if lead > 0 then
-			local ok, v = pcall(function() return part.AssemblyLinearVelocity end)
-			if ok and typeof(v) == "Vector3" then return part.Position + v * lead end
-		end
-		return part.Position
-	end
-	-- Resolver: rank candidates by the selected mode and return the best.
-	local function getClosestVisiblePlayer(maxDist)
-		local mode = (Options.precisionResolver and Options.precisionResolver.Value) or "Closest to Crosshair"
-		local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
-		local bestScore, bestPlr = math.huge, nil
-		for _, plr in pairs(Players:GetPlayers()) do
-			if plr ~= lPlayer then
-				local char = plr.Character
-				local head = char and char:FindFirstChild("Head")
-				local hum  = char and char:FindFirstChildWhichIsA("Humanoid")
-				if head and hum and hum.Health > 0 and passesFilters(plr, char) then
-					local dist = (head.Position - cam.CFrame.Position).Magnitude
-					if dist <= (maxDist or math.huge) then
-						local score
-						if mode == "Closest Distance" then
-							score = dist
-						elseif mode == "Lowest Health" then
-							score = hum.Health
-						else  -- Closest to Crosshair (with optional velocity lead)
-							local sp, on = cam:WorldToViewportPoint(predictedPos(head))
-							score = on and (Vector2.new(sp.X, sp.Y) - center).Magnitude or math.huge
-						end
-						if score < bestScore then bestScore, bestPlr = score, plr end
-					end
-				end
-			end
-		end
-		return bestPlr
-	end
-
-	local function cycleTarget()
-		local alive = {}
-		for _, plr in pairs(Players:GetPlayers()) do
-			local char = plr.Character
-			local hum  = char and char:FindFirstChildWhichIsA("Humanoid")
-			if plr ~= lPlayer and hum and hum.Health > 0 and passesFilters(plr, char) then
-				table.insert(alive, plr)
-			end
-		end
-		if #alive == 0 then selectedTarget = nil; return end
-		if not selectedTarget or not table.find(alive, selectedTarget) then
-			selectedTarget = alive[1]
-		else
-			local idx = table.find(alive, selectedTarget) + 1
-			if idx > #alive then idx = 1 end
-			selectedTarget = alive[idx]
-		end
-	end
-
-	Options.targetKeybind:OnClick(function()
-		if Toggles.precisionEnabled.Value then
-			Toggles.autoSelectTarget:SetValue(false)
-			cycleTarget()
-		end
-	end)
-
-	local function applyExclusive()
-		if Toggles.precisionEnabled.Value and Toggles.precisionExclusive.Value then
-			if Toggles.extenderToggled and Toggles.extenderToggled.Value then
-				Toggles.extenderToggled:SetValue(false)
-				Library:Notify("Precision exclusive: main extender disabled")
-			end
-		end
-	end
-	Toggles.precisionEnabled:OnChanged(function()
-		if Toggles.precisionEnabled.Value then
-			applyExclusive()
-		else
-			restoreExtended(); releaseClaim()
-			lastExtendedChar = nil; selectedTarget = nil
-		end
-	end)
-	Toggles.precisionExclusive:OnChanged(applyExclusive)
-
-	local function precisionTick()
-		if not Toggles.precisionEnabled.Value then return end
-		if Toggles.precisionAutoOffDead.Value and isLocalDead() then
-			if next(extendedParts) then restoreExtended() end
-			releaseClaim(); lastExtendedChar = nil; currentAppliedSize = nil
-			return
-		end
-		-- Respect the main script's "Disable While Seated" (shared via Toggles).
-		-- Honors radius mode: only stop if the target is within the seated radius.
-		if Toggles.seatDisableHBE and Toggles.seatDisableHBE.Value and isLocalSeated() then
-			local stop = true
-			if Toggles.seatRadiusMode and Toggles.seatRadiusMode.Value then
-				local c = selectedTarget and selectedTarget.Character
-				stop = c ~= nil and targetDistance(c) <= (Options.seatRadius and Options.seatRadius.Value or 30)
-			end
-			if stop then
-				if next(extendedParts) then restoreExtended() end
-				releaseClaim(); lastExtendedChar = nil; currentAppliedSize = nil
-				return
-			end
-		end
-		cam = Workspace.CurrentCamera
-		if Toggles.autoSelectTarget.Value then
-			local best = getClosestVisiblePlayer(Options.selectionRadius.Value)
-			-- Target stickiness (hysteresis): re-picking the absolute closest player
-			-- every frame makes the lock thrash between similar-distance targets,
-			-- restoring + re-extending each switch (the "super janky" feel). Keep the
-			-- current target while it's still alive, on-screen and within range, and
-			-- only switch if the new candidate is clearly closer (>20%).
-			local keep = false
-			if selectedTarget and best and selectedTarget ~= best then
-				local c = selectedTarget.Character
-				local h = c and c:FindFirstChildWhichIsA("Humanoid")
-				if c and h and h.Health > 0 and passesFilters(selectedTarget, c) then
-					local head = c:FindFirstChild("Head")
-					local onScreen = false
-					if head then local _, on = cam:WorldToViewportPoint(head.Position); onScreen = on end
-					if onScreen then
-						local curD  = targetDistance(c)
-						local bestD = best.Character and targetDistance(best.Character) or math.huge
-						if curD <= Options.selectionRadius.Value and curD <= bestD * 1.2 then
-							keep = true
-						end
-					end
-				end
-			end
-			if not keep then selectedTarget = best end
-		end
-		local char = selectedTarget and selectedTarget.Character
-		local hum  = char and char:FindFirstChildWhichIsA("Humanoid")
-		local alive = hum and hum.Health > 0 and passesFilters(selectedTarget, char)
-		if char ~= lastExtendedChar or not alive then
-			restoreExtended(); releaseClaim()
-			lastExtendedChar = (char and alive) and char or nil
-		end
-		if char and alive then
-			claim(selectedTarget)
-			local dist = targetDistance(char)
-			currentAppliedSize = computeSize(dist)
-			extendChar(char, currentAppliedSize)
-		else
-			currentAppliedSize = nil
-		end
-	end
-
-	local function precisionVisuals()
-		if not Toggles.precisionEnabled.Value then
-			visualZone.Visible = false; proximityLabel.Visible = false; targetNameLabel.Visible = false
-			return
-		end
-		cam = Workspace.CurrentCamera
-		local now = tick()
-		if now - lastInfoUpdate > 0.2 then
-			lastInfoUpdate = now
-			local char = selectedTarget and selectedTarget.Character
-			if char then
-				-- Frozen-target warning: if the locked target's velocity is ~0 while we're
-				-- extending them, the part-resize is freezing them on your client -- switch
-				-- precisionParts off HumanoidRootPart onto Head/Torso.
-				local frozen = ""
-				pcall(function()
-					local hrp = char:FindFirstChild("HumanoidRootPart")
-					if hrp and char == lastExtendedChar and hrp.AssemblyLinearVelocity.Magnitude < 0.4 then frozen = "  [FROZEN?]" end
-				end)
-				infoTargetLabel:SetText("Target: " .. selectedTarget.Name .. " (" .. math.floor(targetDistance(char)) .. "m)" .. frozen)
-				infoSizeLabel:SetText("Applied size: " .. (currentAppliedSize and string.format("%.1f", currentAppliedSize) or "-"))
-			else
-				infoTargetLabel:SetText("Target: none"); infoSizeLabel:SetText("Applied size: -")
-			end
-		end
-		if Toggles.showVisualZone.Value then
-			local root = lPlayer.Character and lPlayer.Character:FindFirstChild("HumanoidRootPart")
-			if root then
-				local pos, onScreen = cam:WorldToViewportPoint(root.Position)
-				if onScreen and pos.Z > 0 then
-					visualZone.Visible = true
-					local scale = 1000 / pos.Z
-					visualZone.Radius = Options.zoneRadius.Value * scale
-					visualZone.Position = Vector2.new(pos.X, pos.Y)
-					visualZone.Color = Options.zoneColor.Value
-				else visualZone.Visible = false end
-			else visualZone.Visible = false end
-		else visualZone.Visible = false end
-		local char = selectedTarget and selectedTarget.Character
-		local hum = char and char:FindFirstChildWhichIsA("Humanoid")
-		if char and hum and hum.Health > 0 then
-			local head = char:FindFirstChild("Head")
-			if head then
-				local pos, onScreen = cam:WorldToViewportPoint(head.Position)
-				local d = targetDistance(char)
-				if onScreen then
-					if Toggles.showProximityLabel.Value then
-						local category = d < 10 and "Close" or (d < 30 and "Medium" or "Far")
-						proximityLabel.Text = category
-						proximityLabel.Position = Vector2.new(pos.X, pos.Y - 30)
-						proximityLabel.Color = category == "Close" and Color3.fromRGB(0,255,0)
-							or (category == "Medium" and Color3.fromRGB(255,255,0)) or Color3.fromRGB(255,0,0)
-						proximityLabel.Visible = true
-					else proximityLabel.Visible = false end
-					local txt = selectedTarget.Name
-					if Toggles.showDistance.Value then txt = txt .. " [" .. math.floor(d) .. "m]" end
-					targetNameLabel.Text = txt
-					targetNameLabel.Position = Vector2.new(pos.X, pos.Y - 45)
-					targetNameLabel.Color = Color3.fromRGB(255,255,255)
-					targetNameLabel.Visible = true
-				else proximityLabel.Visible = false; targetNameLabel.Visible = false end
-			else proximityLabel.Visible = false; targetNameLabel.Visible = false end
-		else
-			proximityLabel.Visible = false; targetNameLabel.Visible = false
-		end
-	end
-
-	local hbConn = RunService.Heartbeat:Connect(function() pcall(precisionTick) end)
-	RunService:BindToRenderStep("PrecisionVisuals", Enum.RenderPriority.Camera.Value + 1, function() pcall(precisionVisuals) end)
-
-	Bridge:RegisterAddon("Precision", {
-		onUnload = function()
-			pcall(restoreExtended)
-			pcall(releaseClaim)
-			if hbConn then pcall(function() hbConn:Disconnect() end) end
-			pcall(function() RunService:UnbindFromRenderStep("PrecisionVisuals") end)
-			safeRemoveDrawing(visualZone)
-			safeRemoveDrawing(proximityLabel)
-			safeRemoveDrawing(targetNameLabel)
-		end,
-	})
-
-	pcall(function() loadPrecisionConfig(false) end)
-	print("[Content] asset group cached")
-end)
 
 -- ----- Streamer Mode --------------------------------------------------------
 pcall(function()
@@ -5343,6 +5020,13 @@ pcall(function()
 		"Confidence + reach pass. ESP gained a backend readout, a Force-Backend override (Auto/Native/GUI) and a Test-Backends button that paints a native + a GUI marker so you can SEE which renders, plus a live 'ESP drawn N/N' count. Vehicle tuning now detects A-Chassis and requires its Tune module to drive steer/turn values directly. Game profiles export/import as shareable base64 strings via the clipboard. A hook-free Remote Replay tool fires a chosen RemoteEvent at the nearest target for RemoteEvent-damage games. Whole file re-validated with the Luau compiler (clean) with no duplicate control keys.",
 		"Improvements + tailoring pass. Vehicle: Keep-Ownership (setsimulationradius) to make tuning writes stick, and Vehicle ESP now also finds boats/planes/helis (rotor/propeller/hull/name heuristics). Weapon Reader reports detected damage/range. Precision shows a [FROZEN?] warning when a locked target's velocity flatlines. Teleport notifies if you rubberband back. The HBE tab shows a heuristic Detection-risk estimate from your settings. Inf-Ammo takes a manual ammo-value name that extends every detection strategy. F10's report now counts RemoteEvents. All Luau-compiler validated.",
 		"Performance pass. The per-player HBE and ESP loops no longer spawn a fresh coroutine per player per frame (Update/UpdateESP never yield, so task.spawn was pure allocation -- now a direct pcall, same error isolation, much cheaper). The Silent-Melee crosshair throttles its target scan + LOS raycast to ~12Hz while the crosshair still tracks every frame. A Half-Rate ESP toggle renders ESP every other frame (~30fps) to roughly halve its CPU cost on demand.",
+		"Enemy/Ally ESP + Gun Combat. ESP gained an Enemy/Ally colour mode (red enemy, green ally, configurable Friendly/Enemy team lists + Own-Team-Ally) that recolours names, boxes, tracers, chams and the new cur/max health (33/100) readout. A new Aimbot tab adds a hook-free camera Aimbot (FOV, smoothness, target part, visible-only, hold-key/right-mouse, FOV ring), a raycast Triggerbot, and value-based No-Recoil. F10 now also reports the gun/recoil system so you know if those will work. All Luau-compiler validated; 12 tabs.",
+		"Calibration engine, Tiers 1-3. The Calibrate tab now fingerprints the game's FRAMEWORK (A-Chassis, ACS, FE Gun Kit, admin systems, combat services, round systems) and exposes everything on Bridge.Calibrate for other modules. A new Tier-3 behavioral Learn engine snapshots every numeric value on you + your character, lets you perform an action, then diffs it to surface ammo/health/currency/recoil fields WITHOUT knowing their names -- with a one-click hand-off into Inf-Ammo's manual detector.",
+		"Tier 4: Phantom Recon (opt-in, read-only). The principle is 'read the wiring diagram, never trip the alarm': it builds closures from the anti-cheat's own bytecode and dumps the string constants + reads its environment + maps nil-parented honeypot remotes -- pure reflection that game-level Lua cannot observe (there's no callback for someone reading your upvalues), so the probe never writes, fires or hooks, and there is nothing to register. It publishes a minefield map on Bridge.DeepScan: the Remote Replay tool now refuses to fire mapped honeypots, and the Detection-risk readout flags a detected anti-cheat. (Defeats dev-written Lua anti-cheats only; it does not touch Roblox's binary anti-tamper.)",
+		"Tier 5: Collective intelligence. The Calibrate tab gained a per-game profile DB plus community fetch -- point it at any raw-JSON URL (e.g. a GitHub profiles folder) and it pulls <url>/<PlaceId>.json -- with a confidence-scored fallback chain (community -> your local DB -> live scan) that merges and remembers, so a game self-configures instantly next visit.",
+		"Advanced frontier (safe set): a camera Aimbot ballistic resolver (lead by velocity x bullet-travel-time + gravity-drop comp), a team-coloured Radar/minimap rotated to your view, a Movement tab (bunny-hop + infinite jump), teleport Persistence (queue_on_teleport re-inject from a loader URL), and an Auto-Soften director that dials aggressive settings into safe ranges when Phantom Recon detects an anti-cheat. The break-prone/hook frontiers (function hooks, fakelag, actor offload, decompiler, WebSocket C2) were researched and drafted separately, NOT integrated, to keep this build stable.",
+		"Plugin system v1 (compartmentalization). The Bridge gained EnablePlugin/UnloadPlugin + a tracked plugin context (ctx) that auto-disconnects connections, destroys instances/groupboxes and clears control keys on unload, so plugins are true plug-and-play: enable runs a real loadstring and builds the tab on demand, unload frees its memory/connections and drops refs so the code GCs. A Plugins tab manages it, and the first plugin -- Spectate (cycle the camera through players) -- ships as an on-demand module proving the cycle. Existing tabs are untouched and will migrate into plugins one at a time.",
+		"Plugin externalization: the loader now fetches plugins from a Plugin Base URL (your GitHub raw folder, set in the Plugins tab or getgenv().FurryHBE_PluginBase) as <base>/<file>.lua. The Gun Combat block (aimbot/triggerbot/no-recoil), Spectate and the Advanced tab (radar/movement/persistence/auto-soften) were moved OUT into their own files (aimbot.lua, spectate.lua, advanced.lua, precision.lua) and removed from the core (~835 fewer lines). Core helpers getSafeGuiParent + relationshipColor are exposed on the Bridge so external plugins can reuse them.",
 	}
 	local function verNum(i) return 1 + 0.5 * (i - 1) end
 	local function fmtV(n) return "V" .. (n == math.floor(n) and tostring(math.floor(n)) or tostring(n)) end
@@ -5395,7 +5079,9 @@ pcall(function()
 			and Toggles.extenderToggled and Options.extenderSize) then return "red" end
 		if type(players) ~= "table" or not runUpdatePlayers then return "red" end
 		local addons = (getgenv().FurryHBE.Addons) or {}
-		local full = addons.Precision and addons.Streamer and addons.Teleport and addons.Misc
+		-- Precision is now an external plugin (loaded on demand), so it's no longer a
+		-- requirement for the green light; the remaining inline addons still are.
+		local full = addons.Streamer and addons.Teleport and addons.Misc
 		if full and #errorLog == 0 then return "green" end
 		return "yellow"
 	end
@@ -5511,6 +5197,7 @@ pcall(function()
 		-- ESP extras + anti-detect
 		"espRainbow","espRainbowSpeed","espThickness","espDistanceFade","espChamsGlow",
 		"priorityFlash","smartJitter","maxPlausibleMult","espWhitelisted","espAntiOverlap","espOverlapGap","espHalfRate",
+		"espTeamColors","espOwnTeamFriendly","espFriendlyTeams","espEnemyTeams",
 		-- Add-on modules (unified persistence)
 		"precisionEnabled","precisionExclusive","precisionHitboxSize","precisionTransparency","precisionShape",
 		"precisionCollisions","autoSelectTarget","selectionRadius","precisionResolver","precisionLeadTime","dynamicScalingEnabled",
@@ -5524,7 +5211,11 @@ pcall(function()
 		"streamerMaster","hideFOVCircle","hidePlayerESP","hideChams","hideHitboxGlow",
 		"weaponReaderAuto","groupRadius",
 		"silentMeleeEnabled","silentMeleeMode","silentMeleeRange","silentMeleeFOV","silentMeleeOnlyMelee","silentMeleeAura","silentMeleeAuraRate","silentMeleeIgnoreTeam","silentMeleeIgnoreWL","silentMeleeCrosshair","silentMeleeWallPen","silentMeleeShieldBypass","shieldNames",
-		"calApplyParts","calApplyAmmo","calApplyShields",
+		"calApplyParts","calApplyAmmo","calApplyShields","deepScanEnabled","profileSourceUrl","pluginBaseUrl",
+		"aimbotEnabled","aimbotTrigger","aimbotPart","aimbotFOV","aimbotSmooth","aimbotVisibleOnly","aimbotIgnoreTeam","aimbotIgnoreWL","aimbotShowFOV",
+		"triggerEnabled","triggerActivate","triggerDelay","triggerIgnoreTeam","norecoilEnabled",
+		"aimbotPredict","aimbotBulletSpeed","aimbotDropComp",
+		"radarEnabled","radarRange","radarSize","bhopEnabled","infJumpEnabled","autoSoften","persistEnabled","persistUrl",
 	}
 	local g = profilesTab:AddLeftGroupbox("Per-Game Profile")
 	g:AddLabel("Game PlaceId: " .. tostring(game.PlaceId), true)
@@ -5575,6 +5266,7 @@ pcall(function()
 			"espBoxToggled", "espTracerToggled", "espSkeletonToggled", "fovFilterToggled",
 			"dragSelectMode", "silentMeleeEnabled", "silentMeleeAura",
 			"vmInfGas", "vmFullHealth", "vmSetSpeed", "vehBoost", "vehStability", "rrAuto",
+			"aimbotEnabled", "triggerEnabled", "norecoilEnabled", "bhopEnabled", "infJumpEnabled",
 		}) do
 			pcall(function() if Toggles[k] then Toggles[k]:SetValue(false) end end)
 		end
@@ -6318,8 +6010,57 @@ pcall(function()
 		return lPlayer.Character
 	end
 
+	-- ===== Tier 2: framework fingerprinting ==============================
+	-- Build a name index of the key containers once, then test known framework
+	-- signatures against it. Identifying the engine lets the right adapter load
+	-- (we already adapt A-Chassis vehicles). Exposed on Bridge.Calibrate.
+	Bridge.Calibrate = Bridge.Calibrate or {}
+	local FRAMEWORKS = {
+		{ name = "A-Chassis (vehicles)", any = { "A-Chassis Tune", "AChassisTune" } },
+		{ name = "ACS (guns)",           any = { "ACS_Engine", "ACS_Storage", "ACS_Client", "ACS_Server", "ACS_Tools" } },
+		{ name = "FE Gun Kit (guns)",    any = { "GunStates", "FAS", "GunValue", "MainModuleFE" } },
+		{ name = "Adonis Admin",         any = { "Adonis", "Adonis_Loader" } },
+		{ name = "HD Admin",             any = { "HDAdminMain", "HDAdminClient", "HDAdminServer" } },
+		{ name = "Kohl's Admin",         any = { "KAdmin", "Kohls" } },
+		{ name = "Basic Admin",          any = { "BasicAdmin", "Basic Admin Essentials" } },
+		{ name = "Linked Sword combat",  any = { "LinkedSword" } },
+		{ name = "Generic combat svc",   any = { "CombatService", "DamageService", "WeaponService" } },
+		{ name = "Round system",         any = { "RoundSystem", "GameManager", "MatchService" } },
+	}
+	local function buildNameIndex()
+		local idx, count = {}, 0
+		local conts = { game:GetService("ReplicatedStorage"), Workspace, game:GetService("ReplicatedFirst"), lPlayer:FindFirstChild("PlayerScripts") }
+		for _, c in ipairs(conts) do
+			if c then
+				pcall(function()
+					for _, d in ipairs(c:GetDescendants()) do
+						count = count + 1; if count > 60000 then break end
+						idx[d.Name] = true
+					end
+				end)
+			end
+		end
+		return idx
+	end
+	local function detectFrameworks()
+		local idx = buildNameIndex()
+		local found = {}
+		for _, fw in ipairs(FRAMEWORKS) do
+			for _, sig in ipairs(fw.any) do
+				if idx[sig] then found[#found + 1] = fw.name; break end
+			end
+		end
+		Bridge.Calibrate.frameworks = found
+		Bridge.Calibrate.framework = found[1]
+		return found
+	end
+
 	local function runScan(apply)
 		local r = {}
+
+		-- 0) framework fingerprint (Tier 2)
+		local fws = detectFrameworks()
+		r[#r + 1] = "Framework: " .. (#fws > 0 and table.concat(fws, ", ") or "none/custom")
 
 		-- 1) character parts (rig parts, skipping accessories/tool handles)
 		local char = sampleCharacter()
@@ -6414,7 +6155,29 @@ pcall(function()
 		end
 		r[#r + 1] = "Melee dmg: " .. mech
 
+		-- Gun/recoil system: count recoil/spread values on the held tool so you know
+		-- if No-Recoil/Aimbot have something to work with in this game. (intelligence)
+		local recoilN, isGun = 0, false
+		pcall(function()
+			local c = lPlayer.Character
+			local tool = c and c:FindFirstChildWhichIsA("Tool")
+			if tool then
+				isGun = nameHas(tool.Name, GUN_WORDS)
+				for _, d in ipairs(tool:GetDescendants()) do
+					if d:IsA("NumberValue") or d:IsA("IntValue") then
+						local n = d.Name:lower()
+						for _, w in ipairs({ "recoil", "spread", "kick", "bloom", "sway" }) do if n:find(w) then recoilN = recoilN + 1; break end end
+					end
+				end
+			end
+		end)
+		r[#r + 1] = ("Gun: %s, recoil values: %d"):format(isGun and "yes" or "no/none held", recoilN)
+
 		pcall(function() reportLabel:SetText(table.concat(r, "\n")) end)
+		-- Expose results so any module can read the calibration (Tier 1+2 engine).
+		Bridge.Calibrate.parts, Bridge.Calibrate.guns, Bridge.Calibrate.shields = nonStd, guns, shields
+		Bridge.Calibrate.report = r
+		Bridge.Calibrate.lastScan = tick()
 		return { parts = nonStd, guns = guns, shields = shields }
 	end
 
@@ -6479,6 +6242,254 @@ pcall(function()
 		if applyProfile(strToProfile(Options.calProfileStr.Value)) then Library:Notify("Imported profile") else Library:Notify("Invalid profile string") end
 	end):AddToolTip("Apply a profile from the pasted string above.")
 
+	-- ===== Tier 3: behavioral learning engine ===========================
+	-- Snapshot every numeric value/attribute on you + your character, you perform an
+	-- action (shoot / take damage / earn), then Analyze diffs the snapshot to surface
+	-- the fields that changed -- finding ammo/health/currency/recoil WITHOUT knowing
+	-- their names (defeats obfuscated games). Generalizes the Inf-Ammo learner.
+	local learnGroup = calTab:AddRightGroupbox("Learn (Tier 3)")
+	learnGroup:AddLabel("Snapshot -> do an action (shoot / take damage /\nearn) -> Analyze. Finds the values that changed.", true)
+	learnGroup:AddDropdown("learnFilter", { Text = "Show", Values = { "Decreased (ammo/health/spent)", "Increased (currency/score)", "Any change" }, Default = "Any change", Multi = false, AllowNull = false })
+	local learnInfo = learnGroup:AddLabel("Snapshot to begin.")
+
+	local function collectFields()
+		local fields = {}
+		local function scan(root)
+			if not root then return end
+			local ok = pcall(function()
+				local n = 0
+				for _, d in ipairs(root:GetDescendants()) do
+					n = n + 1; if n > 40000 then break end
+					if d:IsA("NumberValue") or d:IsA("IntValue") then
+						fields[#fields + 1] = { label = d.Name, get = function() return d.Value end }
+					else
+						pcall(function()
+							for an, av in pairs(d:GetAttributes()) do
+								if type(av) == "number" then fields[#fields + 1] = { label = d.Name .. "@" .. an, get = function() return d:GetAttribute(an) end } end
+							end
+						end)
+					end
+				end
+			end)
+		end
+		scan(lPlayer); scan(lPlayer.Character)
+		return fields
+	end
+	local snap = {}
+	local function snapshotNow()
+		snap = {}
+		for _, f in ipairs(collectFields()) do snap[#snap + 1] = { label = f.label, get = f.get, v0 = f.get() } end
+		pcall(function() learnInfo:SetText("Snapshot: " .. #snap .. " values.\nDo the action, then Analyze.") end)
+	end
+	local function analyze()
+		local filter = Options.learnFilter.Value
+		local results = {}
+		for _, s in ipairs(snap) do
+			local now = s.get()
+			if type(now) == "number" and type(s.v0) == "number" and now ~= s.v0 then
+				local delta = now - s.v0
+				local keep = (filter == "Any change") or (filter:find("Decreased") and delta < 0) or (filter:find("Increased") and delta > 0)
+				if keep then results[#results + 1] = { label = s.label, delta = delta } end
+			end
+		end
+		table.sort(results, function(a, b) return math.abs(a.delta) > math.abs(b.delta) end)
+		local lines = { #results .. " value(s) changed:" }
+		for i = 1, math.min(6, #results) do lines[#lines + 1] = ("%s  %+g"):format(results[i].label, results[i].delta) end
+		pcall(function() learnInfo:SetText(table.concat(lines, "\n")) end)
+		Bridge.Calibrate.learned = results
+	end
+	learnGroup:AddButton("Snapshot", snapshotNow):AddToolTip("Capture every numeric value on you + your character.")
+	learnGroup:AddButton("Analyze", analyze):AddToolTip("Diff against the snapshot and list what changed.")
+	learnGroup:AddButton("Top -> Inf-Ammo Name", function()
+		if Bridge.Calibrate.learned and Bridge.Calibrate.learned[1] and Options.infAmmoManualName then
+			local nm = Bridge.Calibrate.learned[1].label:gsub("@.*$", "")
+			pcall(function() Options.infAmmoManualName:SetValue(nm) end)
+			Library:Notify("Inf-Ammo manual name -> " .. nm)
+		else
+			Library:Notify("Analyze first")
+		end
+	end):AddToolTip("Feed the biggest-changed value's name into Inf-Ammo's manual detector.")
+
+	-- ===== Tier 4: Phantom Recon (read-only AC + combat introspection) ====
+	-- THE PRINCIPLE: never test the alarm by tripping it -- read the wiring diagram.
+	-- A game-level anti-cheat is just Lua. We READ its environment + bytecode
+	-- constants + connections (pure reflection) to learn exactly which values /
+	-- remotes / actions it watches. Reflection is invisible to game Lua -- there's no
+	-- callback for "someone read my upvalues" -- so the probe never writes, never
+	-- fires, never hooks: there is nothing for the AC to register. We then publish a
+	-- "minefield map" (honeypots to avoid, values it watches) on Bridge.DeepScan so
+	-- every other feature steers around it. (Defeats dev-written Lua anti-cheats; it
+	-- does NOT touch Roblox's binary anti-tamper -- that's a separate layer.)
+	local dsGroup = calTab:AddRightGroupbox("Phantom Recon (Tier 4)")
+	dsGroup:AddToggle("deepScanEnabled", { Text = "Enable Deep Scan", Default = false, Tooltip = "ADVANCED / opt-in. Read-only reflection of the game's scripts +\nmemory (getsenv/getscriptclosure/getconstants/getnilinstances).\nMore detectable at the executor level than other tiers, so it's\noff by default and runs nothing until you press the button." })
+	local dsInfo = dsGroup:AddLabel("Deep Scan off.")
+	Bridge.DeepScan = Bridge.DeepScan or { acActive = false, watched = {}, avoid = {}, hotProps = {} }
+
+	local AC_SIGS = { "anticheat", "anti-cheat", "antiexploit", "anti_exploit", "anti exploit", "exploitdetect",
+		"cheatdetect", "detection", "sentinel", "guardian", "kicklog", "flagged", "watchdog", "integritycheck", "antiaim" }
+	local MONITORED_PROPS = { "WalkSpeed", "JumpPower", "JumpHeight", "Health", "MaxHealth", "HipHeight", "Speed", "Gravity" }
+	local function acSig(name)
+		local ln = tostring(name):lower()
+		for _, s in ipairs(AC_SIGS) do if ln:find(s, 1, true) then return s end end
+		return nil
+	end
+
+	-- Stage 1: fingerprint AC scripts/modules by name (bounded; no giant getgc walk).
+	local function fingerprintAC()
+		local found = {}
+		pcall(function() for _, s in ipairs((getrunningscripts and getrunningscripts()) or {}) do local sig = acSig(s.Name); if sig then found[#found + 1] = { obj = s, name = s.Name, why = sig } end end end)
+		pcall(function() for _, m in ipairs((getloadedmodules and getloadedmodules()) or {}) do local sig = acSig(m.Name); if sig then found[#found + 1] = { obj = m, name = m.Name, why = sig } end end end)
+		return found
+	end
+
+	-- Stage 2: map honeypots -- nil-parented remotes (classic bait the AC references
+	-- but never trees) + remotes named like detection. These go on the AVOID list.
+	local function mapHoneypots()
+		local avoid, n = {}, 0
+		pcall(function()
+			for _, inst in ipairs((getnilinstances and getnilinstances()) or {}) do
+				pcall(function() if inst:IsA("RemoteEvent") or inst:IsA("RemoteFunction") or inst:IsA("BindableEvent") then avoid[inst] = "nil-parented remote (bait)" end end)
+			end
+		end)
+		pcall(function()
+			for _, d in ipairs(game:GetDescendants()) do
+				n = n + 1; if n > 60000 then break end
+				if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then local sig = acSig(d.Name); if sig then avoid[d] = "AC-named remote (" .. sig .. ")" end end
+			end
+		end)
+		return avoid
+	end
+
+	-- Stage 3: READ THE WIRING. Build a closure from each AC script's bytecode and
+	-- dump its string constants (value names, property names, remote names it
+	-- references) + the same for its nested protos. Pure read -- never executed.
+	local function readWiring(acScripts)
+		local watched = {}
+		for _, ac in ipairs(acScripts) do
+			pcall(function()
+				local closure = getscriptclosure and getscriptclosure(ac.obj)
+				if not closure then return end
+				local function harvest(fn)
+					local consts = debug and debug.getconstants and debug.getconstants(fn)
+					if type(consts) == "table" then
+						for _, c in ipairs(consts) do if type(c) == "string" and #c > 2 then watched[c] = true end end
+					end
+				end
+				harvest(closure)
+				pcall(function() for _, proto in ipairs((debug.getprotos and debug.getprotos(closure)) or {}) do harvest(proto) end end)
+			end)
+		end
+		return watched
+	end
+
+	-- Stage 4: connection recon -- how many watchers sit on the frame loop (AC
+	-- heartbeat checks live here). Read-only count.
+	local function reconConns()
+		local t = {}
+		for _, sig in ipairs({ "Heartbeat", "Stepped", "RenderStepped" }) do
+			pcall(function() t[sig] = #getconnections(RunService[sig]) end)
+		end
+		return t
+	end
+
+	local function runProbe()
+		if not Toggles.deepScanEnabled.Value then Library:Notify("Enable Deep Scan first"); return end
+		local ac = fingerprintAC()
+		local avoid = mapHoneypots()
+		local watched = readWiring(ac)
+		local conns = reconConns()
+		-- Which KNOWN-monitored properties does the AC reference?
+		local hot = {}
+		for _, p in ipairs(MONITORED_PROPS) do if watched[p] then hot[#hot + 1] = p end end
+		Bridge.DeepScan.acActive = #ac > 0
+		Bridge.DeepScan.avoid = avoid
+		Bridge.DeepScan.watched = watched
+		Bridge.DeepScan.hotProps = hot
+		local wN, aN = 0, 0
+		for _ in pairs(watched) do wN = wN + 1 end
+		for _ in pairs(avoid) do aN = aN + 1 end
+		local lines = {
+			"AC scripts: " .. #ac .. (#ac > 0 and (" (" .. ac[1].name .. ")") or ""),
+			"Honeypots avoided: " .. aN,
+			"AC string-refs read: " .. wN,
+			(#hot > 0 and ("Watches: " .. table.concat(hot, ", ")) or "Watches: (none of the common props)"),
+			("Frame watchers: HB %d / Step %d / Rndr %d"):format(conns.Heartbeat or 0, conns.Stepped or 0, conns.RenderStepped or 0),
+			"Footprint: read-only (0 writes, 0 fires)",
+		}
+		pcall(function() dsInfo:SetText(table.concat(lines, "\n")) end)
+		Library:Notify(#ac > 0 and ("AC detected: " .. ac[1].name) or "No named anti-cheat found")
+	end
+	dsGroup:AddButton("Run Phantom Probe", runProbe):AddToolTip("Read-only recon: fingerprint the anti-cheat, map honeypots, and read which\nvalues/remotes it watches -- without touching any of them. Nothing is fired or written.")
+
+	-- Minefield map other modules consult before they act.
+	Bridge.isHoneypot = function(inst) return Bridge.DeepScan.avoid and Bridge.DeepScan.avoid[inst] ~= nil end
+	Bridge.isWatched  = function(name) return Bridge.DeepScan.watched and Bridge.DeepScan.watched[tostring(name)] == true end
+
+	-- ===== Tier 5: Collective intelligence ==============================
+	-- A personal multi-game profile DB plus community fetch (point it at any raw-JSON
+	-- URL -- e.g. a GitHub profiles folder -- and it pulls <url>/<PlaceId>.json), with
+	-- a confidence-scored fallback chain: community (curated) -> your local DB -> a
+	-- live scan. Best source wins, results merge, and the outcome is saved back so the
+	-- game self-configures instantly next time.
+	local ciGroup = calTab:AddLeftGroupbox("Collective (Tier 5)")
+	ciGroup:AddInput("profileSourceUrl", { Text = "Profile Source URL", Default = "", Tooltip = "Base raw-JSON URL of a community profile repo. Fetches\n<url>/<PlaceId>.json. Empty = local + live scan only." })
+	local ciInfo = ciGroup:AddLabel("Auto-config: community -> local DB -> live scan.")
+
+	local DB_FILE = "FurryHBE_ProfileDB.json"
+	local function keysOfSet(t) local o = {} if type(t) == "table" then for k in pairs(t) do o[#o + 1] = k end end return o end
+	local function readDB()
+		if not (isfile and readfile and isfile(DB_FILE)) then return {} end
+		local ok, d = pcall(function() return HttpService:JSONDecode(readfile(DB_FILE)) end)
+		return (ok and type(d) == "table") and d or {}
+	end
+	local function writeDB(db) if writefile then pcall(function() writefile(DB_FILE, HttpService:JSONEncode(db)) end) end end
+	local function countKeys(t) local n = 0 for _ in pairs(t) do n = n + 1 end return n end
+
+	local function fetchCommunity()
+		local base = Options.profileSourceUrl.Value
+		if not base or base == "" then return nil end
+		local url = base
+		if not url:find("%.json$") then url = url:gsub("/$", "") .. "/" .. tostring(game.PlaceId) .. ".json" end
+		local ok, body = pcall(function() return game:HttpGet(url) end)
+		if not ok or type(body) ~= "string" then return nil end
+		local ok2, d = pcall(function() return HttpService:JSONDecode(body) end)
+		return (ok2 and type(d) == "table") and d or nil
+	end
+	local function liveProfile()
+		local s = runScan(false)
+		return { parts = keysOfSet(s.parts), guns = keysOfSet(s.guns), shields = keysOfSet(s.shields) }
+	end
+
+	local function autoConfigure()
+		local sources = {}
+		local com = fetchCommunity()
+		if com and (com.parts or com.guns or com.shields) then sources[#sources + 1] = { "Community", 0.9, com } end
+		local db = readDB()
+		local loc = db[tostring(game.PlaceId)]
+		if loc then sources[#sources + 1] = { "Local DB", 0.85, loc } end
+		sources[#sources + 1] = { "Live Scan", 0.7, liveProfile() }
+		-- Apply low->high confidence so the best source's selections land last; the
+		-- additive lists naturally MERGE everything we know.
+		table.sort(sources, function(a, b) return a[2] < b[2] end)
+		local best
+		for _, s in ipairs(sources) do applyProfile(s[3]); best = s end
+		if best then db[tostring(game.PlaceId)] = best[3]; writeDB(db) end
+		pcall(function() ciInfo:SetText(("Configured: %s (%.0f%% conf), %d sources merged"):format(best and best[1] or "?", (best and best[2] or 0) * 100, #sources)) end)
+		Library:Notify("Auto-configured this game")
+	end
+
+	ciGroup:AddButton("Auto-Configure (fallback chain)", autoConfigure):AddToolTip("Try community -> local DB -> live scan, merge + apply, and remember.")
+	ciGroup:AddButton("Fetch Community Profile", function()
+		local com = fetchCommunity()
+		if com then applyProfile(com); Library:Notify("Applied community profile") else Library:Notify("No community profile (set the URL?)") end
+	end):AddToolTip("Pull this PlaceId's profile from the source URL.")
+	ciGroup:AddButton("Save to Local DB", function()
+		local db = readDB()
+		db[tostring(game.PlaceId)] = liveProfile()
+		writeDB(db)
+		Library:Notify("Saved to local DB (" .. countKeys(db) .. " games stored)")
+	end):AddToolTip("Scan and store this game's profile in your personal DB.")
+
 	-- Auto-load a previously-saved profile for this place on startup.
 	pcall(function() loadProfile(false) end)
 	print("[Calibrate] F10 extract/calibrate registered")
@@ -6542,6 +6553,8 @@ pcall(function()
 	local function fireAt(plr)
 		local remote = remotes[Options.rrRemote.Value or ""]
 		if not remote then Library:Notify("Pick a remote first"); return end
+		-- Phantom Recon: never fire a mapped honeypot/AC remote.
+		if Bridge.isHoneypot and Bridge.isHoneypot(remote) then Library:Notify("That remote is a honeypot - skipped"); return end
 		local c, mode = plr.Character, Options.rrArg.Value
 		local arg
 		if mode == "Target Player" then arg = plr
@@ -6565,6 +6578,47 @@ pcall(function()
 	end)
 	Bridge:RegisterAddon("RemoteReplay", { onUnload = function() if rrConn then pcall(function() rrConn:Disconnect() end) end end })
 	print("[Remote] replay tool registered")
+end)
+
+-- ===== [V19] Plugin Manager + first plug-and-play plugin (Spectate) ========
+-- Keystone of the compartmentalization system: plugins are registered as source
+-- strings and loaded ON DEMAND via Bridge:EnablePlugin (a real loadstring), then
+-- torn down completely via Bridge:UnloadPlugin. This proves the plug-and-play cycle;
+-- existing tabs are untouched and will migrate into plugins one at a time later.
+pcall(function()
+	local pmTab   = mainWindow:AddTab("Plugins")
+	local pmGroup = pmTab:AddLeftGroupbox("Plugin Manager")
+	pmGroup:AddLabel("Enable loads a plugin's tab + features on demand.\nUnload frees its memory/connections and clears its UI.", true)
+
+	-- Base URL for the external plugin files (set here, or via getgenv().FurryHBE_PluginBase
+	-- before running). Enable fetches <base>/<file>. This is what keeps the core small:
+	-- plugin code lives in separate .lua files, NOT inline.
+	pmGroup:AddInput("pluginBaseUrl", { Text = "Plugin Base URL", Default = Bridge.PluginBase or "", Tooltip = "Raw folder URL holding the plugin .lua files (e.g. a GitHub raw\nfolder). Enable downloads <base>/<file> on demand." })
+	Options.pluginBaseUrl:OnChanged(function() Bridge.PluginBase = Options.pluginBaseUrl.Value end)
+	if Bridge.PluginBase ~= "" then pcall(function() Options.pluginBaseUrl:SetValue(Bridge.PluginBase) end) end
+
+	-- External plugins (uploaded to the base URL). No inline source -> small core.
+	Bridge:RegisterPluginSource("Aimbot",   { tab = "Aimbot",   file = "aimbot.lua",   desc = "Camera aimbot + triggerbot + no-recoil with ballistic prediction." })
+	Bridge:RegisterPluginSource("Spectate", { tab = "Spectate", file = "spectate.lua", desc = "Cycle the camera through players to spectate." })
+	Bridge:RegisterPluginSource("Advanced", { tab = "Advanced", file = "advanced.lua", desc = "Radar/minimap, bunny-hop + infinite jump, teleport persistence, auto-soften." })
+	Bridge:RegisterPluginSource("Precision", { tab = "Precision", file = "precision.lua", desc = "Single-target hitbox extender with resolver, dynamic scaling + visuals." })
+
+	-- One manager row (status + Enable + Unload) per registered plugin.
+	local function addRow(name)
+		local status = pmGroup:AddLabel(name .. ": not loaded")
+		pmGroup:AddButton("Enable " .. name, function()
+			local ok, err = Bridge:EnablePlugin(name)
+			status:SetText(name .. (ok and ": loaded" or (": FAILED - " .. tostring(err))))
+			if Library and Library.Notify then Library:Notify(ok and ("Enabled " .. name) or ("Enable failed: " .. tostring(err))) end
+		end):AddToolTip(Bridge.PluginSources[name] and Bridge.PluginSources[name].desc or "")
+		pmGroup:AddButton("Unload " .. name, function()
+			Bridge:UnloadPlugin(name)
+			status:SetText(name .. ": not loaded")
+			if Library and Library.Notify then Library:Notify("Unloaded " .. name) end
+		end)
+	end
+	for n in pairs(Bridge.PluginSources) do addRow(n) end
+	print("[Plugins] manager + external plugin registry (Aimbot, Spectate)")
 end)
 
 pcall(finalInit)
