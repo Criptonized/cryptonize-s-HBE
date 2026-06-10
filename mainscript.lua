@@ -64,10 +64,24 @@ SaveManager:SetFolder("FurryHBE")
 local DrawingFallback = {}
 DrawingFallback.__index = DrawingFallback
 
+-- Prefer gethui() (hidden, stealthier container) over CoreGui when the executor
+-- exposes it; fall back to CoreGui otherwise.
+local function getSafeGuiParent()
+	local ok, hui = pcall(function() return gethui and gethui() end)
+	if ok and typeof(hui) == "Instance" then return hui end
+	return game:GetService("CoreGui")
+end
+
 local DrawingGui = Instance.new("ScreenGui")
 DrawingGui.Name = "DrawingFallback"
 DrawingGui.ResetOnSpawn = false
-DrawingGui.Parent = game:GetService("CoreGui")
+-- IgnoreGuiInset is REQUIRED: WorldToViewportPoint returns true screen-space
+-- coordinates (no topbar inset), so without this the whole ESP overlay is shoved
+-- ~36px down and names/boxes sit off their targets. DisplayOrder keeps ESP above
+-- the game world while staying below the LinoriaLib menu.
+DrawingGui.IgnoreGuiInset = true
+DrawingGui.DisplayOrder = 10
+DrawingGui.Parent = getSafeGuiParent()
 
 function DrawingFallback.new(type)
 	local self = setmetatable({}, DrawingFallback)
@@ -96,7 +110,12 @@ function DrawingFallback.new(type)
 		self.element.BackgroundTransparency = 1
 		self.element.BorderSizePixel = 0
 		self.element.Parent = DrawingGui
-		
+		-- Full-radius corner turns the square Frame into an actual circle, so the
+		-- FOV ring and part-scanner rings render round instead of as boxes.
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(1, 0)
+		corner.Parent = self.element
+
 		self.border = Instance.new("UIStroke")
 		self.border.Color = self.color
 		self.border.Thickness = self.thickness
@@ -225,13 +244,40 @@ function DrawingFallback:Update()
 	end
 end
 
--- Check if Drawing library is available, otherwise use fallback
-local DrawingAvailable = pcall(function()
+-- Decide whether to use the native Drawing library or the GUI fallback.
+-- CRITICAL: a successful Drawing.new() only proves the CONSTRUCTOR works -- not
+-- that the object actually paints on screen. On Potassium (Solara-based), native
+-- Drawing objects construct fine (this probe passes) but do NOT reliably render
+-- 2D ESP -- names, boxes and tracers all stay invisible. That is the real reason
+-- ESP looked broken there while the LinoriaLib UI (regular GUI, not Drawing) and
+-- chams (a real Highlight) still worked. So we detect the executor and route
+-- Potassium/Solara through the GUI fallback, which uses real TextLabels/Frames in
+-- a ScreenGui and always renders.
+--   Overrides (set before executing):
+--     getgenv().FurryHBE_ForceGuiESP   = true  -> always use the GUI fallback
+--     getgenv().FurryHBE_ForceNativeESP = true -> always use native Drawing
+local execName = ""
+pcall(function() if identifyexecutor then execName = tostring((identifyexecutor())) end end)
+execName = execName:lower()
+local guiOnlyExecutor = execName:find("potassium") ~= nil or execName:find("solara") ~= nil
+
+local nativeConstructs = pcall(function()
 	local probe = Drawing.new("Circle")
 	-- Potassium uses :Destroy(), other executors use :Remove()
 	if probe.Destroy then probe:Destroy() elseif probe.Remove then probe:Remove() end
 end)
-if DrawingAvailable then
+
+local useNativeDrawing
+if getgenv().FurryHBE_ForceGuiESP then
+	useNativeDrawing = false
+elseif getgenv().FurryHBE_ForceNativeESP then
+	useNativeDrawing = nativeConstructs
+else
+	useNativeDrawing = nativeConstructs and not guiOnlyExecutor
+end
+getgenv().FurryHBE_UsingNativeESP = useNativeDrawing  -- readable for debugging
+
+if useNativeDrawing then
 	-- Use native Drawing directly — no wrapper, no proxy, no mutation.
 	DrawingFallback.new = Drawing.new
 else
@@ -557,6 +603,8 @@ local function cleanup()
 		end
 		bridge.Addons = {}
 	end
+	-- F13c: drop every tracked connection.
+	if bridge and bridge.DisconnectAll then pcall(function() bridge:DisconnectAll() end) end
 
 	getgenv().FurryHBELoaded = false
 end
@@ -623,6 +671,21 @@ function Bridge:ClaimPlayer(player, addonName)
 end
 function Bridge:ReleasePlayer(player)
 	if player then self.Claims[player] = nil end
+end
+
+-- F13c: tracked-connection helper. Bridge:Connect(signal, fn) connects and records
+-- the connection so Bridge:DisconnectAll() (run from cleanup) tears every one down
+-- on unload -- no leaked RBXScriptConnections. New code should prefer this over a
+-- bare :Connect when it doesn't already manage its own teardown.
+Bridge.Connections = {}
+function Bridge:Connect(signal, fn)
+	local ok, conn = pcall(function() return signal:Connect(fn) end)
+	if ok and conn then table.insert(self.Connections, conn); return conn end
+	return nil
+end
+function Bridge:DisconnectAll()
+	for _, c in ipairs(self.Connections) do pcall(function() c:Disconnect() end) end
+	self.Connections = {}
 end
 
 getgenv().FurryHBE = Bridge
@@ -802,6 +865,14 @@ end)
 registerUIElement("extenderToggled", extenderToggle)
 hitboxGroupbox:AddSlider("extenderSize", { Text = "Hitbox Size", Min = 2, Max = 100, Default = 10, Rounding = 1, Tooltip = "Base size for hitbox extension. (Default: 10)" }):OnChanged(updatePlayers)
 hitboxGroupbox:AddDropdown("hitboxShape", { Text = "Hitbox Shape", AllowNull = false, Multi = false, Values = { "Cube", "Flat (disk)", "Tall (pillar)" }, Default = "Cube", Tooltip = "Cube = uniform; Flat = wide & short;\nTall = narrow & tall. (Default: Cube)" }):OnChanged(updatePlayers)
+-- Manual escape hatch for the rare "head stays enlarged after turning HBE off"
+-- case (corrupted size-default capture / a part the game never re-replicates).
+-- Snaps every tracked player + world part back to its recorded real values.
+hitboxGroupbox:AddButton("Force Restore All", function()
+	pcall(function() if resetAllPlayers then resetAllPlayers() end end)
+	pcall(function() if resetWorldParts then resetWorldParts() end end)
+	if Library and Library.Notify then Library:Notify("Restored all hitboxes to original size") end
+end):AddToolTip("Snap every player's parts back to their real size/transparency/collision.\nUse if a head stays enlarged after toggling the extender off.")
 
 -- Part Scanner
 local partScannerToggled = false
@@ -910,6 +981,8 @@ antiDetectionGroupbox:AddToggle("autoOffWhenDead", { Text = "Auto-Off When Dead"
 antiDetectionGroupbox:AddToggle("seatDisableHBE", { Text = "Disable While Seated", Default = true, Tooltip = "Stop extending hitboxes while YOU sit in any seat (car/turret/etc).\nPrevents the in-vehicle freeze where players & cars look stuck.\nResumes automatically when you get out. (Default: ON)" }):OnChanged(updatePlayers)
 antiDetectionGroupbox:AddToggle("seatRadiusMode", { Text = "Seated: Nearby Only", Default = false, Tooltip = "When seated, only disable hitboxes for players\nwithin the radius below instead of everyone. (Default: OFF)" }):OnChanged(updatePlayers)
 antiDetectionGroupbox:AddSlider("seatRadius", { Text = "Seated Radius (studs)", Min = 5, Max = 200, Default = 30, Rounding = 1, Tooltip = "Radius used by 'Seated: Nearby Only'. (Default: 30)" }):OnChanged(updatePlayers)
+-- Heuristic detection-risk estimate from your current settings (updated in updateStatus).
+local riskLabel = antiDetectionGroupbox:AddLabel("Detection risk: -")
 
 -- Ignores
 ignoresGroupbox:AddToggle("extenderSitCheck", { Text = "Ignore Sitting Players", Default = false, Tooltip = "Don't extend players who are sitting. (Default: OFF)" }):OnChanged(updatePlayers)
@@ -950,7 +1023,10 @@ espNameGroupbox:AddToggle("espTeamToggled", { Text = "Show Team Name", Default =
 espNameGroupbox:AddSlider("espNameSize", { Text = "Name Text Size", Min = 8, Max = 36, Default = 14, Rounding = 0, Tooltip = "Font size of ESP names. Smaller = far less\noverlap when players clump together. (Default: 14)" })
 
 -- Chams
-local espChamsToggle = espChamsGroupbox:AddToggle("espHighlightToggled", { Text = "Enable Chams", Default = false, Tooltip = "Show player highlights. (Default: OFF)" }):AddColorPicker("espHighlightColor1", { Title = "Fill Color", Default = Color3.fromRGB(0, 0, 0) }):AddColorPicker("espHighlightColor2", { Title = "Outline Color", Default = Color3.fromRGB(0, 0, 0) })
+-- Chams default to a VISIBLE fill+outline. They used to default to pure black on
+-- both, which renders invisible against most game backgrounds -- the "chams don't
+-- work" report. Fill = translucent red, outline = white.
+local espChamsToggle = espChamsGroupbox:AddToggle("espHighlightToggled", { Text = "Enable Chams", Default = false, Tooltip = "Show player highlights. (Default: OFF)" }):AddColorPicker("espHighlightColor1", { Title = "Fill Color", Default = Color3.fromRGB(255, 60, 60) }):AddColorPicker("espHighlightColor2", { Title = "Outline Color", Default = Color3.fromRGB(255, 255, 255) })
 registerUIElement("espHighlightToggled", espChamsToggle)
 Toggles.espHighlightToggled:OnChanged(updatePlayers)
 Options.espHighlightColor1:OnChanged(updatePlayers)
@@ -974,6 +1050,7 @@ espAdvancedGroupbox:AddToggle("espDistanceFade", { Text = "Distance Fade", Defau
 espAdvancedGroupbox:AddSlider("espOverlapGap", { Text = "Overlap Spacing", Min = 8, Max = 40, Default = 16, Rounding = 0, Tooltip = "Vertical pixels enforced between names by Anti-Overlap. (Default: 16)" })
 espAdvancedGroupbox:AddToggle("espSkeletonToggled", { Text = "Skeleton ESP", Default = false, Tooltip = "Draw lines between the character's bones. (Default: OFF)" }):OnChanged(updatePlayers)
 espAdvancedGroupbox:AddToggle("espOffscreenToggled", { Text = "Off-Screen Markers", Default = false, Tooltip = "Show an edge marker pointing toward off-screen players. (Default: OFF)" }):OnChanged(updatePlayers)
+espAdvancedGroupbox:AddToggle("espHalfRate", { Text = "Half-Rate ESP (perf)", Default = false, Tooltip = "Redraw ESP every other frame (~30fps) instead of every frame.\nRoughly halves ESP CPU cost; slight position lag. (Default: OFF)" })
 espAdvancedGroupbox:AddToggle("espTracerToggled", { Text = "Tracer Lines", Default = false, Tooltip = "Show lines from screen center to players. (Default: OFF)" }):OnChanged(updatePlayers)
 espAdvancedGroupbox:AddLabel("Tracer Color"):AddColorPicker("espTracerColor", { Title = "Tracer Color", Default = Color3.fromRGB(255, 0, 0) })
 Options.espTracerColor:OnChanged(updatePlayers)
@@ -981,6 +1058,44 @@ Options.espTracerColor:OnChanged(updatePlayers)
 -- ESP Filters
 espFilterGroupbox:AddSlider("espMaxDistance", { Text = "Max Distance", Min = 0, Max = 1000, Default = 1000, Rounding = 1, Tooltip = "Maximum distance for ESP (0 = unlimited). (Default: 1000)" }):OnChanged(updatePlayers)
 espFilterGroupbox:AddToggle("espFOVFilter", { Text = "FOV Filter", Default = false, Tooltip = "Only ESP players within FOV. (Default: OFF)" }):OnChanged(updatePlayers)
+
+-- ESP backend diagnostics (#1 render-verify + #2 live readout). The Drawing path is
+-- decided at load; the override sets a getgenv flag for the NEXT execute, and the
+-- Test button paints a native AND a GUI marker so you can SEE which one renders.
+espFilterGroupbox:AddLabel("Backend: " .. (getgenv().FurryHBE_UsingNativeESP and "Native Drawing" or "GUI fallback"), true)
+local espDiagLabel = espFilterGroupbox:AddLabel("ESP drawn: -")
+local espDiagTick = 0
+espFilterGroupbox:AddDropdown("espBackendOverride", { Text = "Force Backend", Values = { "Auto", "Native", "GUI" }, Default = "Auto", Multi = false, AllowNull = false, Tooltip = "Force the ESP draw backend on the NEXT execute (re-run to apply).\nNative = Drawing API, GUI = fallback frames. (Default: Auto)" }):OnChanged(function()
+	local v = Options.espBackendOverride.Value
+	getgenv().FurryHBE_ForceNativeESP = (v == "Native") or nil
+	getgenv().FurryHBE_ForceGuiESP = (v == "GUI") or nil
+	if v ~= "Auto" then Library:Notify("ESP backend -> " .. v .. ": re-execute to apply") end
+end)
+espFilterGroupbox:AddButton("Test ESP Backends (3s)", function()
+	local cx, cy = Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2
+	local made = {}
+	pcall(function()
+		if Drawing then
+			local t = Drawing.new("Text"); t.Text = "NATIVE ESP OK"; t.Size = 28
+			t.Color = Color3.fromRGB(0, 255, 0); t.Center = true; t.Outline = true
+			t.Position = Vector2.new(cx, cy - 40); t.Visible = true
+			made[#made + 1] = t
+		end
+	end)
+	pcall(function()
+		local sg = Instance.new("ScreenGui"); sg.Name = "FurryHBE_ESPTest"; sg.IgnoreGuiInset = true
+		sg.DisplayOrder = 9e8; sg.Parent = getSafeGuiParent()
+		local lb = Instance.new("TextLabel"); lb.AnchorPoint = Vector2.new(0.5, 0.5)
+		lb.Position = UDim2.fromOffset(cx, cy + 40); lb.Size = UDim2.fromOffset(260, 32)
+		lb.BackgroundTransparency = 1; lb.Text = "GUI ESP OK"; lb.TextColor3 = Color3.fromRGB(0, 200, 255)
+		lb.TextStrokeTransparency = 0; lb.TextSize = 28; lb.Font = Enum.Font.SourceSansBold; lb.Parent = sg
+		made[#made + 1] = sg
+	end)
+	Library:Notify("Center screen: GREEN = Native works, BLUE = GUI works")
+	task.delay(3, function()
+		for _, o in ipairs(made) do pcall(function() if o.Remove then o:Remove() elseif o.Destroy then o:Destroy() end end) end
+	end)
+end):AddToolTip("Paint a native + a GUI test marker so you can see which backend renders on your executor.")
 
 -- Whitelist Tab
 local whitelistTab = mainWindow:AddTab("Whitelist")
@@ -1004,6 +1119,29 @@ whitelistGroupbox:AddButton("Refresh Player Lists", function()
 	end
 	Library:Notify("Player lists refreshed (" .. added .. " entries added)")
 end):AddToolTip("Re-sync the whitelist / priority / ignore dropdowns with everyone currently in the server")
+-- F13a: type-to-filter for the player dropdowns. Filters the whitelist & priority
+-- lists to server players whose name/display matches; already-selected names are
+-- always kept visible. Empty = show everyone. (LinoriaLib has no native search, and
+-- we can't monkey-patch it, so this drives the dropdown Values directly.)
+whitelistGroupbox:AddInput("playerSearch", { Text = "Search Players", Default = "", Tooltip = "Type to filter the Whitelist & Priority player lists. Empty = all." })
+local function applyPlayerSearch()
+	local q = (Options.playerSearch and Options.playerSearch.Value or ""):lower()
+	for _, key in ipairs({ "whitelistPlayerList", "priorityPlayerList" }) do
+		local opt = Options[key]
+		if opt then
+			local names = {}
+			for _, plr in ipairs(Players:GetPlayers()) do
+				if plr ~= lPlayer and (q == "" or plr.Name:lower():find(q, 1, true) or plr.DisplayName:lower():find(q, 1, true)) then
+					names[#names + 1] = plr.Name
+				end
+			end
+			for _, n in ipairs(opt:GetActiveValues()) do if not table.find(names, n) then names[#names + 1] = n end end
+			opt.Values = names
+			pcall(function() opt:SetValues() end)
+		end
+	end
+end
+Options.playerSearch:OnChanged(applyPlayerSearch)
 whitelistGroupbox:AddDropdown("whitelistPlayerList", { Text = "Whitelisted Players", AllowNull = true, Multi = true, Values = {}, Tooltip = "Players whitelisted from HBE. (Default: none)" }):OnChanged(updatePlayers)
 whitelistGroupbox:AddToggle("espWhitelisted", { Text = "Keep ESP on Whitelisted", Default = true, Tooltip = "Whitelisted players keep their ESP; only their hitbox extension is skipped.\n(Default: ON)" })
 local whitelistCountLabel = whitelistGroupbox:AddLabel("Whitelisted: 0")
@@ -1405,11 +1543,10 @@ function runUpdatePlayers()
 		for plr, v in pairs(players) do
 			-- Low-FPS throttle: skip players past the distance cap. (F9)
 			if not (Bridge.Perf and Bridge.Perf.skipPlayer and Bridge.Perf.skipPlayer(plr)) then
-				task.spawn(function()
-					pcall(function()
-						v:Update()
-					end)
-				end)
+				-- Direct pcall instead of task.spawn: Update() never yields, so spawning
+				-- a fresh coroutine per player per frame was pure overhead. pcall still
+				-- isolates a per-player error so one bad character can't stop the rest. (perf)
+				pcall(function() v:Update() end)
 			end
 		end
 	end)
@@ -1495,6 +1632,7 @@ end
 -- (UpdateESP runs synchronously -- no yields -- so by the time the loop returns
 -- every slot is present). After all players update we nudge clumped names apart.
 local espNameSlots = {}
+local espHalfFrame = false  -- toggled each frame when Half-Rate ESP is on (perf)
 local function resolveEspOverlap()
 	if not (Toggles.espAntiOverlap and Toggles.espAntiOverlap.Value) then return end
 	local slots = espNameSlots
@@ -1525,20 +1663,33 @@ RunService:BindToRenderStep("furryWalls", Enum.RenderPriority.Camera.Value - 1, 
 	if not getgenv().FurryHBELoaded then return end
 	-- Low-FPS throttle: skip some ESP redraws when frames are scarce. (F9)
 	if Bridge.Perf and Bridge.Perf.gateESP and Bridge.Perf.gateESP() then return end
+	-- Half-Rate ESP (perf): render every other frame on demand.
+	if Toggles.espHalfRate and Toggles.espHalfRate.Value then
+		espHalfFrame = not espHalfFrame
+		if espHalfFrame then return end
+	end
 	Camera = Workspace.CurrentCamera
 	pcall(updateFOVCircle)
 	if #espNameSlots > 0 then table.clear(espNameSlots) end
 	for _, v in pairs(players) do
-		task.spawn(function()
-			local success, err = pcall(function()
-				v:UpdateESP()
-			end)
-			if not success then
-				logError("UpdateESP", err, "espNameToggled")
-			end
-		end)
+		-- Direct pcall, not task.spawn: UpdateESP never yields, so a coroutine per
+		-- player per frame was wasted allocation; pcall still isolates errors. This
+		-- also guarantees every espNameSlot is filled before resolveEspOverlap runs. (perf)
+		local success, err = pcall(function() v:UpdateESP() end)
+		if not success then logError("UpdateESP", err, "espNameToggled") end
 	end
 	pcall(resolveEspOverlap)
+	-- #2 live ESP readout: count how many name labels are actually visible this frame
+	-- (throttled). 0 visible while players are nearby = the backend isn't painting.
+	if espDiagLabel and (tick() - (espDiagTick or 0) > 0.5) then
+		espDiagTick = tick()
+		local drawn, tracked = 0, 0
+		for _, v in pairs(players) do
+			tracked = tracked + 1
+			if v.nameEsp and v.nameEsp.Visible then drawn = drawn + 1 end
+		end
+		pcall(function() espDiagLabel:SetText(("ESP drawn: %d / %d tracked"):format(drawn, tracked)) end)
+	end
 end)
 
 -- Other helper functions
@@ -1570,6 +1721,19 @@ local function updateStatus()
 	statusErrorsLabel:SetText("Errors: " .. errorCount)
 	whitelistCountLabel:SetText("Whitelisted: " .. whitelistedCount)
 	priorityCountLabel:SetText("Priority: " .. priorityCount)
+
+	-- Heuristic detection-risk estimate from current settings.
+	pcall(function()
+		if not riskLabel then return end
+		local r = 0
+		if Options.extenderSize and Options.extenderSize.Value > 30 then r = r + 2 end
+		if Toggles.collisionsToggled and Toggles.collisionsToggled.Value then r = r + 2 end
+		if not (Toggles.humanizationToggled and Toggles.humanizationToggled.Value) then r = r + 1 end
+		if Toggles.randomizationToggled and Toggles.randomizationToggled.Value and not (Toggles.smartJitter and Toggles.smartJitter.Value) then r = r + 1 end
+		if Options.updateRate and Options.updateRate.Value > 30 then r = r + 1 end
+		if not (Options.maxPlausibleMult and Options.maxPlausibleMult.Value > 0) then r = r + 1 end
+		riskLabel:SetText("Detection risk: " .. (r <= 2 and "Low" or (r <= 4 and "Medium" or "High")))
+	end)
 end
 
 local function isWhitelisted(player)
@@ -3079,6 +3243,8 @@ local function finalInit()
 	
 	if Library and Library.Notify then
 		Library:Notify("hai :3")
+		-- ESP render path readout (helps diagnose Drawing issues per executor).
+		Library:Notify("ESP draw: " .. (getgenv().FurryHBE_UsingNativeESP and "Native Drawing" or "GUI fallback"))
 		if Library.ToggleKeybind and Library.ToggleKeybind.Value then
 			Library:Notify("Press " .. Library.ToggleKeybind.Value .. " to open the menu")
 		end
@@ -3129,9 +3295,15 @@ pcall(function()
 	hbeGroup:AddToggle("precisionCollisions", { Text = "Keep Collisions", Default = false, Tooltip = "Leave the extended part collidable (off = restore original CanCollide). (Default: OFF)" })
 	hbeGroup:AddToggle("precisionSmooth", { Text = "Smooth Transitions", Default = false, Tooltip = "Interpolate size changes instead of snapping. (Default: OFF)" })
 	hbeGroup:AddSlider("precisionSmoothSpeed", { Text = "Smooth Speed", Min = 0.05, Max = 1, Default = 0.3, Rounding = 2, Tooltip = "How fast the size eases toward the target (1 = instant). (Default: 0.3)" })
-	hbeGroup:AddDropdown("precisionParts", { Text = "Parts to Extend", AllowNull = true, Multi = true, Values = { "HumanoidRootPart", "Head", "Torso", "UpperTorso", "LowerTorso", "Left Arm", "Right Arm", "Left Leg", "Right Leg" }, Default = { "HumanoidRootPart" }, Tooltip = "Which of the target's parts to extend. (Default: HumanoidRootPart)" })
+	-- Default is Head (NOT HumanoidRootPart). Resizing a target's HumanoidRootPart
+	-- -- the part that drives their character -- makes them freeze/stutter in place
+	-- on your screen, which is the "janky frozen target" bug. Head extension (what
+	-- the main extender uses) does not freeze them. Pick HRP only if you accept that.
+	hbeGroup:AddDropdown("precisionParts", { Text = "Parts to Extend", AllowNull = true, Multi = true, Values = { "HumanoidRootPart", "Head", "Torso", "UpperTorso", "LowerTorso", "Left Arm", "Right Arm", "Left Leg", "Right Leg" }, Default = { "Head" }, Tooltip = "Which of the target's parts to extend.\nWARNING: HumanoidRootPart freezes the target on\nyour screen -- prefer Head/Torso. (Default: Head)" })
 
-	targetGroup:AddToggle("autoSelectTarget", { Text = "Auto-Select Target", Default = true, Tooltip = "Automatically lock onto the nearest visible player. (Default: ON)" })
+	targetGroup:AddToggle("autoSelectTarget", { Text = "Auto-Select Target", Default = true, Tooltip = "Automatically lock onto a target using the Resolver below. (Default: ON)" })
+	targetGroup:AddDropdown("precisionResolver", { Text = "Resolver", Values = { "Closest to Crosshair", "Closest Distance", "Lowest Health" }, Default = "Closest to Crosshair", Multi = false, AllowNull = false, Tooltip = "F11: how Auto-Select ranks targets.\nCrosshair = nearest to your aim; Distance = nearest in 3D;\nLowest Health = easiest kill. (Default: Closest to Crosshair)" })
+	targetGroup:AddSlider("precisionLeadTime", { Text = "Velocity Lead (s)", Min = 0, Max = 0.5, Default = 0, Rounding = 2, Tooltip = "F11: predict the target's position this many seconds ahead by\ntheir velocity when scoring 'Closest to Crosshair' -- helps lock\nfast movers. 0 = off. (Default: 0)" })
 	targetGroup:AddSlider("selectionRadius", { Text = "Selection Radius (studs)", Min = 5, Max = 1000, Default = 150, Rounding = 1, Tooltip = "Max distance for auto-selection. (Default: 150)" })
 	targetGroup:AddLabel("Manual Target"):AddKeyPicker("targetKeybind", { Default = "T", NoUI = true, Text = "Cycle Target" })
 
@@ -3160,7 +3332,7 @@ pcall(function()
 	local PRECISION_KEYS = {
 		"precisionEnabled","precisionExclusive","precisionHitboxSize","precisionTransparency",
 		"precisionShape","precisionCollisions","precisionSmooth","precisionSmoothSpeed","precisionParts",
-		"autoSelectTarget","selectionRadius",
+		"autoSelectTarget","selectionRadius","precisionResolver","precisionLeadTime",
 		"precisionRespectWhitelist","precisionIgnoreTeam","precisionAutoOffDead",
 		"precisionFOVGate","precisionFOVRadius","precisionRandomize","precisionRandomAmount",
 		"dynamicScalingEnabled","scalingCloseFactor","scalingFarFactor","scalingThreshold",
@@ -3225,6 +3397,7 @@ pcall(function()
 			if typeof(part) == "Instance" and part.Parent then
 				pcall(function()
 					part.Size = orig.Size; part.Transparency = orig.Transparency; part.CanCollide = orig.CanCollide
+					if orig.Massless ~= nil then part.Massless = orig.Massless end
 				end)
 			end
 			extendedParts[part] = nil
@@ -3280,7 +3453,10 @@ pcall(function()
 		for part, orig in pairs(extendedParts) do
 			if not desired[part] then
 				if typeof(part) == "Instance" and part.Parent then
-					pcall(function() part.Size = orig.Size; part.Transparency = orig.Transparency; part.CanCollide = orig.CanCollide end)
+					pcall(function()
+						part.Size = orig.Size; part.Transparency = orig.Transparency; part.CanCollide = orig.CanCollide
+						if orig.Massless ~= nil then part.Massless = orig.Massless end
+					end)
 				end
 				extendedParts[part] = nil
 			end
@@ -3288,7 +3464,10 @@ pcall(function()
 		for part in pairs(desired) do
 			local e = extendedParts[part]
 			if not e then
-				e = { Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide, Cur = scalar }
+				-- Capture the TRUE originals BEFORE we ever resize this part, so a
+				-- later restore returns it exactly (and never stores an already-
+				-- extended size as the "original"). (precision freeze fix)
+				e = { Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide, Massless = part.Massless, Cur = scalar }
 				extendedParts[part] = e
 			end
 			local applied = scalar
@@ -3302,6 +3481,10 @@ pcall(function()
 				part.Size = sizeVectorForShape(applied)
 				part.Transparency = transp
 				part.CanCollide = keepCol and true or e.CanCollide
+				-- Massless keeps the enlarged hitbox from shifting the target's centre
+				-- of mass, which is what made them stagger/freeze in place. Never make
+				-- the assembly root (HumanoidRootPart) massless. (precision freeze fix)
+				if part.Name ~= "HumanoidRootPart" then part.Massless = true end
 			end)
 		end
 	end
@@ -3328,18 +3511,38 @@ pcall(function()
 		return true
 	end
 
+	-- Predict a part's position `lead` seconds ahead using its velocity (F11).
+	local function predictedPos(part)
+		local lead = (Options.precisionLeadTime and Options.precisionLeadTime.Value) or 0
+		if lead > 0 then
+			local ok, v = pcall(function() return part.AssemblyLinearVelocity end)
+			if ok and typeof(v) == "Vector3" then return part.Position + v * lead end
+		end
+		return part.Position
+	end
+	-- Resolver: rank candidates by the selected mode and return the best.
 	local function getClosestVisiblePlayer(maxDist)
-		local bestDist, bestPlr = maxDist or math.huge, nil
+		local mode = (Options.precisionResolver and Options.precisionResolver.Value) or "Closest to Crosshair"
+		local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+		local bestScore, bestPlr = math.huge, nil
 		for _, plr in pairs(Players:GetPlayers()) do
 			if plr ~= lPlayer then
 				local char = plr.Character
 				local head = char and char:FindFirstChild("Head")
 				local hum  = char and char:FindFirstChildWhichIsA("Humanoid")
 				if head and hum and hum.Health > 0 and passesFilters(plr, char) then
-					local _, onScreen = cam:WorldToViewportPoint(head.Position)
-					if onScreen then
-						local dist = (head.Position - cam.CFrame.Position).Magnitude
-						if dist < bestDist then bestDist, bestPlr = dist, plr end
+					local dist = (head.Position - cam.CFrame.Position).Magnitude
+					if dist <= (maxDist or math.huge) then
+						local score
+						if mode == "Closest Distance" then
+							score = dist
+						elseif mode == "Lowest Health" then
+							score = hum.Health
+						else  -- Closest to Crosshair (with optional velocity lead)
+							local sp, on = cam:WorldToViewportPoint(predictedPos(head))
+							score = on and (Vector2.new(sp.X, sp.Y) - center).Magnitude or math.huge
+						end
+						if score < bestScore then bestScore, bestPlr = score, plr end
 					end
 				end
 			end
@@ -3414,7 +3617,30 @@ pcall(function()
 		end
 		cam = Workspace.CurrentCamera
 		if Toggles.autoSelectTarget.Value then
-			selectedTarget = getClosestVisiblePlayer(Options.selectionRadius.Value)
+			local best = getClosestVisiblePlayer(Options.selectionRadius.Value)
+			-- Target stickiness (hysteresis): re-picking the absolute closest player
+			-- every frame makes the lock thrash between similar-distance targets,
+			-- restoring + re-extending each switch (the "super janky" feel). Keep the
+			-- current target while it's still alive, on-screen and within range, and
+			-- only switch if the new candidate is clearly closer (>20%).
+			local keep = false
+			if selectedTarget and best and selectedTarget ~= best then
+				local c = selectedTarget.Character
+				local h = c and c:FindFirstChildWhichIsA("Humanoid")
+				if c and h and h.Health > 0 and passesFilters(selectedTarget, c) then
+					local head = c:FindFirstChild("Head")
+					local onScreen = false
+					if head then local _, on = cam:WorldToViewportPoint(head.Position); onScreen = on end
+					if onScreen then
+						local curD  = targetDistance(c)
+						local bestD = best.Character and targetDistance(best.Character) or math.huge
+						if curD <= Options.selectionRadius.Value and curD <= bestD * 1.2 then
+							keep = true
+						end
+					end
+				end
+			end
+			if not keep then selectedTarget = best end
 		end
 		local char = selectedTarget and selectedTarget.Character
 		local hum  = char and char:FindFirstChildWhichIsA("Humanoid")
@@ -3444,7 +3670,15 @@ pcall(function()
 			lastInfoUpdate = now
 			local char = selectedTarget and selectedTarget.Character
 			if char then
-				infoTargetLabel:SetText("Target: " .. selectedTarget.Name .. " (" .. math.floor(targetDistance(char)) .. "m)")
+				-- Frozen-target warning: if the locked target's velocity is ~0 while we're
+				-- extending them, the part-resize is freezing them on your client -- switch
+				-- precisionParts off HumanoidRootPart onto Head/Torso.
+				local frozen = ""
+				pcall(function()
+					local hrp = char:FindFirstChild("HumanoidRootPart")
+					if hrp and char == lastExtendedChar and hrp.AssemblyLinearVelocity.Magnitude < 0.4 then frozen = "  [FROZEN?]" end
+				end)
+				infoTargetLabel:SetText("Target: " .. selectedTarget.Name .. " (" .. math.floor(targetDistance(char)) .. "m)" .. frozen)
 				infoSizeLabel:SetText("Applied size: " .. (currentAppliedSize and string.format("%.1f", currentAppliedSize) or "-"))
 			else
 				infoTargetLabel:SetText("Target: none"); infoSizeLabel:SetText("Applied size: -")
@@ -3696,6 +3930,18 @@ pcall(function()
 			-- Direct teleport (no seat, may rubberband in some games)
 			root.CFrame = dest
 		end
+		-- Verify arrival: after a moment, if we got snapped back (rubberbanded), say so
+		-- so you know the seat trick didn't hold in this game.
+		task.spawn(function()
+			task.wait(0.4)
+			local r = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso")
+			if r then
+				local off = (r.Position - targetPosition).Magnitude
+				if off > 25 then
+					pcall(function() Library:Notify("Teleport: rubberbanded back (" .. math.floor(off) .. " studs off)") end)
+				end
+			end
+		end)
 	end
 
 	local function rebuildDropdown(selectName)
@@ -3844,7 +4090,7 @@ end)
 -- instead of a BasePart, and a multi-return bug in the upright math. Cleanup is
 -- registered through the Bridge and all connections are tracked + disconnected.
 pcall(function()
-	local miscTab = mainWindow:AddTab("Miscellaneous")
+	local miscTab = mainWindow:AddTab("Vehicle/Misc")
 	Bridge.MiscTab = miscTab  -- still exposed so future add-ons can attach here too
 	local lPlayer = Players.LocalPlayer
 
@@ -3941,6 +4187,11 @@ pcall(function()
 
 	expanderGroup:AddToggle("toolExpanderEnabled", { Text = "Enable Tool Expander", Default = false, Tooltip = "Master toggle for tool hitbox expansion. (Default: OFF)" })
 	expanderGroup:AddSlider("toolExpandSize", { Text = "Expansion Size", Min = 0.5, Max = 10, Default = 2, Rounding = 1, Tooltip = "Multiplier applied to tool part sizes. (Default: 2)" })
+	expanderGroup:AddToggle("toolNonCollide", { Text = "Non-Collidable Hitbox", Default = true, Tooltip = "MELEE-COLLIDE: the enlarged hitbox is non-collidable (won't\nshove you/objects or snag on the world) but still keeps CanTouch\non, so the game's own touch-damage still lands. (Default: ON)" }):OnChanged(function()
+		-- Re-apply so the change takes effect immediately on already-expanded tools.
+		-- expandTool applies the on/off collision state both ways, so this is enough.
+		if applyToolExpansion then pcall(applyToolExpansion) end
+	end)
 	expanderGroup:AddDropdown("toolPartFilter", { Text = "Parts to Expand", Values = { "Handle", "Blade", "HitBox", "Tip", "All" }, Default = { "Handle", "Blade" }, Multi = true, AllowNull = true, Tooltip = "Which tool parts get expanded (name match). (Default: Handle, Blade)" })
 
 	scannerGroup:AddButton("Scan Tools", function()
@@ -4218,7 +4469,29 @@ pcall(function()
 	end)
 
 	-- ===== Tool expander logic =====
+	-- originalToolSizes[tool][part] now stores a RECORD { Size, CanCollide, CanTouch,
+	-- Massless } captured before we touch the part, so restore returns it exactly.
 	local originalToolSizes = setmetatable({}, { __mode = "k" })
+
+	-- Restore one tool's saved parts to their captured originals (size + the collision/
+	-- touch/mass props the MELEE-COLLIDE option changes). Used by every restore path.
+	local function restoreToolRecord(saved)
+		if not saved then return end
+		for part, rec in pairs(saved) do
+			if part and part.Parent then
+				pcall(function()
+					if typeof(rec) == "Vector3" then
+						part.Size = rec  -- legacy shape (size only), just in case
+					else
+						part.Size = rec.Size
+						if rec.CanCollide ~= nil then part.CanCollide = rec.CanCollide end
+						if rec.CanTouch ~= nil then part.CanTouch = rec.CanTouch end
+						if rec.Massless ~= nil then part.Massless = rec.Massless end
+					end
+				end)
+			end
+		end
+	end
 
 	local function shouldExpandPart(part)
 		local filter = Options.toolPartFilter:GetActiveValues()
@@ -4234,21 +4507,36 @@ pcall(function()
 			-- `force` skips the active-list gate (used by Auto-Add on Equip, F8).
 			if not force and not table.find(Options.expandedWeapons:GetActiveValues(), tool.Name) then return end
 			local scale = Options.toolExpandSize.Value
+			local nonCollide = Toggles.toolNonCollide and Toggles.toolNonCollide.Value
 			for _, part in ipairs(tool:GetDescendants()) do
 				if part:IsA("BasePart") and shouldExpandPart(part) then
 					originalToolSizes[tool] = originalToolSizes[tool] or {}
-					if not originalToolSizes[tool][part] then originalToolSizes[tool][part] = part.Size end
-					part.Size = originalToolSizes[tool][part] * scale
+					local rec = originalToolSizes[tool][part]
+					if not rec then
+						rec = { Size = part.Size, CanCollide = part.CanCollide, CanTouch = part.CanTouch, Massless = part.Massless }
+						originalToolSizes[tool][part] = rec
+					end
+					part.Size = rec.Size * scale
+					-- MELEE-COLLIDE: the enlarged hitbox is non-collidable (won't shove
+					-- you/objects or snag) but keeps CanTouch on so the game's own
+					-- Handle.Touched damage still fires, and Massless so it can't drag
+					-- your character around. Applied BOTH ways so toggling the option
+					-- off re-collides an already-expanded tool. Full originals are
+					-- restored via restoreToolRecord on un-expand/unload.
+					if nonCollide then
+						part.CanCollide = false
+						part.CanTouch = true
+						part.Massless = true
+					else
+						part.CanCollide = rec.CanCollide
+						part.CanTouch = rec.CanTouch
+						part.Massless = rec.Massless
+					end
 				end
 			end
 		else
-			local saved = originalToolSizes[tool]
-			if saved then
-				for part, origSize in pairs(saved) do
-					if part and part.Parent then part.Size = origSize end
-				end
-				originalToolSizes[tool] = nil
-			end
+			restoreToolRecord(originalToolSizes[tool])
+			originalToolSizes[tool] = nil
 		end
 	end
 
@@ -4280,6 +4568,18 @@ pcall(function()
 		end)
 	end
 
+	-- TOOL-OVERHAUL: one-click "add the tool I'm holding to the list AND expand it
+	-- now", so you don't have to find its name in the dropdown first.
+	expanderGroup:AddButton("Add & Expand Held Weapon", function()
+		local char = lPlayer.Character
+		local tool = char and char:FindFirstChildWhichIsA("Tool")
+		if not tool then Library:Notify("Equip a tool first"); return end
+		addToolToList(tool.Name)
+		if not Toggles.toolExpanderEnabled.Value then Toggles.toolExpanderEnabled:SetValue(true) end
+		expandTool(tool, true, true)
+		Library:Notify("Expanding: " .. tool.Name)
+	end):AddToolTip("Add the currently-held tool to the active list and expand its hitbox immediately.")
+
 	local function hookTool(tool)
 		track(tool.Equipped:Connect(function()
 			-- Auto-Add on Equip: detect & handle the equipped tool with no manual scan. (F8)
@@ -4309,9 +4609,7 @@ pcall(function()
 			applyToolExpansion()
 		else
 			for tool, saved in pairs(originalToolSizes) do
-				for part, origSize in pairs(saved) do
-					if part and part.Parent then part.Size = origSize end
-				end
+				restoreToolRecord(saved)
 				originalToolSizes[tool] = nil
 			end
 		end
@@ -4324,9 +4622,7 @@ pcall(function()
 			if assistConn then pcall(function() assistConn:Disconnect() end) end
 			pcall(removeVehiclePhysics)
 			for tool, saved in pairs(originalToolSizes) do
-				for part, origSize in pairs(saved) do
-					if part and part.Parent then pcall(function() part.Size = origSize end) end
-				end
+				restoreToolRecord(saved)
 			end
 		end,
 	})
@@ -4432,9 +4728,191 @@ pcall(function()
 		if Toggles.mvHbeEnabled.Value and pickedPart then pcall(apply) end
 	end)
 
+	-- ---- VEH-MOD: gas / health / top-speed on the picked vehicle ----------
+	-- Reuses the picked vehicle (above). Detects fuel/health/speed NumberValues +
+	-- numeric attributes + VehicleSeat.MaxSpeed on the model and lets you pin them.
+	-- "Infinite" holds each value at the highest it's ever been (auto-calibrates to
+	-- full after one refuel/repair); Top Speed writes a chosen value.
+	local vmGroup = (Bridge.MiscTab or mainTab):AddRightGroupbox("Vehicle Modify (picked)")
+	vmGroup:AddToggle("vmInfGas",     { Text = "Infinite Gas/Fuel", Default = false, Tooltip = "Hold detected fuel/gas values at full. (Default: OFF)" })
+	vmGroup:AddToggle("vmFullHealth", { Text = "Full Health/Durability", Default = false, Tooltip = "Hold detected health/durability values at full. (Default: OFF)" })
+	vmGroup:AddToggle("vmSetSpeed",   { Text = "Set Top Speed", Default = false, Tooltip = "Write the speed below to detected speed values + VehicleSeat.MaxSpeed. (Default: OFF)" })
+	vmGroup:AddSlider("vmTopSpeed",   { Text = "Top Speed", Min = 10, Max = 1000, Default = 200, Rounding = 0, Tooltip = "Value written when Set Top Speed is on. (Default: 200)" })
+	-- Handling panel (screenshot-style). Writes to the detected VehicleSeat + any
+	-- matching tune NumberValues/attributes on the vehicle YOU drive (you own its
+	-- network, so the writes replicate). Auto-detected when you pick a vehicle.
+	vmGroup:AddToggle("vehBoost",           { Text = "Speed Boost", Default = false, Tooltip = "Master switch for the handling sliders below. (Default: OFF)" })
+	vmGroup:AddSlider("vehTargetSpeed",     { Text = "Target Speed", Min = 0, Max = 500, Default = 95, Rounding = 0, Tooltip = "Writes VehicleSeat.MaxSpeed + detected speed values. (Default: 95)" })
+	vmGroup:AddSlider("vehAccel",           { Text = "Acceleration", Min = 0, Max = 100, Default = 1, Rounding = 0, Tooltip = "Writes VehicleSeat.Torque + detected torque/accel values. (Default: 1)" })
+	vmGroup:AddSlider("vehTurnRate",        { Text = "Turn Rate", Min = 0, Max = 100, Default = 3, Rounding = 0, Tooltip = "Writes VehicleSeat.TurnSpeed + detected turn values. (Default: 3)" })
+	vmGroup:AddSlider("vehTurnAngle",       { Text = "Turn Angle", Min = 0, Max = 90, Default = 16, Rounding = 0, Tooltip = "Writes detected steer-angle values (A-Chassis style). (Default: 16)" })
+	vmGroup:AddSlider("vehTurnAccel",       { Text = "Turn Acceleration", Min = 0, Max = 100, Default = 3, Rounding = 0, Tooltip = "Writes detected turn-acceleration values. (Default: 3)" })
+	vmGroup:AddToggle("vehStability",       { Text = "Stability Assist", Default = false, Tooltip = "Keep the vehicle upright (anti-rollover) via AlignOrientation. (Default: OFF)" })
+	vmGroup:AddSlider("vehStabilityStrength", { Text = "Stability Strength", Min = 0, Max = 1, Default = 0.65, Rounding = 2, Tooltip = "How aggressively stability holds you upright. (Default: 0.65)" })
+	vmGroup:AddToggle("vehKeepOwnership", { Text = "Keep Ownership (sim radius)", Default = false, Tooltip = "Raise your simulation radius (setsimulationradius) so you keep\nnetwork ownership of the vehicle -- makes the tuning writes far\nmore likely to stick. May be detectable; off by default. (Default: OFF)" })
+	local vmInfo = vmGroup:AddLabel("Detected: pick a vehicle, then Detect")
+	-- Live confidence readout: are your writes even going to stick? Shows whether
+	-- YOU own the vehicle's network (writes replicate) vs the server, and whether a
+	-- written value actually held (server didn't revert it).
+	local vmStatus = vmGroup:AddLabel("Owner: -")
+
+	local GAS_WORDS       = { "fuel", "gas", "gasoline", "petrol", "diesel" }
+	local HEALTH_WORDS    = { "health", "durability", "integrity", "hp" }
+	local TURNACCEL_WORDS = { "turnaccel", "turnacceleration", "steeracceleration" }
+	local TURN_WORDS      = { "turnspeed", "turnrate", "steerspeed", "returnspeed" }
+	local STEER_WORDS     = { "maxsteer", "steerangle", "turnangle", "steerinner", "steerouter" }
+	local TORQUE_WORDS    = { "torque", "acceleration", "accel", "horsepower" }
+	local SPEED_WORDS     = { "maxspeed", "topspeed", "speed", "velocity" }
+	local function nameHasW(n, words) n = n:lower() for _, w in ipairs(words) do if n:find(w) then return true end end return false end
+	-- Order matters: turn/steer must be checked before plain "speed" so "TurnSpeed"
+	-- doesn't get mis-bucketed as top speed.
+	local function classifyVal(name)
+		if nameHasW(name, GAS_WORDS) then return "gas" end
+		if nameHasW(name, HEALTH_WORDS) then return "health" end
+		if nameHasW(name, TURNACCEL_WORDS) then return "turnaccel" end
+		if nameHasW(name, TURN_WORDS) then return "turn" end
+		if nameHasW(name, STEER_WORDS) then return "steer" end
+		if nameHasW(name, TORQUE_WORDS) then return "torque" end
+		if nameHasW(name, SPEED_WORDS) then return "speed" end
+		return nil
+	end
+	local function fieldVal(v)  return { read = function() return v.Value end, write = function(n) pcall(function() v.Value = n end) end } end
+	local function fieldAttr(i, a) return { read = function() return i:GetAttribute(a) end, write = function(n) pcall(function() i:SetAttribute(a, n) end) end } end
+		local function fieldTbl(t, k) return { read = function() return t[k] end, write = function(n) pcall(function() t[k] = n end) end } end
+	local function pickedModel() return pickedPart and (pickedPart:FindFirstAncestorWhichIsA("Model") or pickedPart) or nil end
+	local function vmPrimary()
+		local m = pickedModel(); if not m then return nil end
+		return m.PrimaryPart or (pickedPart and pickedPart:IsA("BasePart") and pickedPart) or m:FindFirstChildWhichIsA("BasePart")
+	end
+
+	local vmB = { gas = {}, health = {}, speed = {}, torque = {}, turn = {}, steer = {}, turnaccel = {} }
+	local vmSeats, vmMaxSeen, vmIsAChassis = {}, {}, false
+	local function detectVehMod()
+		vmB = { gas = {}, health = {}, speed = {}, torque = {}, turn = {}, steer = {}, turnaccel = {} }
+		vmSeats, vmMaxSeen, vmIsAChassis = {}, {}, false
+		local m = pickedModel()
+		if not m then pcall(function() vmInfo:SetText("Detected: no vehicle picked") end); return end
+		for _, d in ipairs(m:GetDescendants()) do
+			if d:IsA("NumberValue") or d:IsA("IntValue") then
+				local b = classifyVal(d.Name); if b then table.insert(vmB[b], fieldVal(d)) end
+			elseif d:IsA("VehicleSeat") then vmSeats[#vmSeats + 1] = d
+				elseif d:IsA("ModuleScript") and (d.Name == "Tune" or d.Name:lower():find("chassis")) then
+					-- A-Chassis: require the (pure-data) Tune module and expose numeric keys
+					-- as writable fields so the handling sliders can drive its tune.
+					pcall(function()
+						local tune = require(d)
+						if type(tune) == "table" then
+							vmIsAChassis = true
+							for k, val in pairs(tune) do
+								if type(val) == "number" then
+									local b = classifyVal(tostring(k)); if b then table.insert(vmB[b], fieldTbl(tune, k)) end
+								end
+							end
+						end
+					end)
+				end
+			pcall(function()
+				for an, av in pairs(d:GetAttributes()) do
+					if type(av) == "number" then local b = classifyVal(an); if b then table.insert(vmB[b], fieldAttr(d, an)) end end
+				end
+			end)
+		end
+		pcall(function() vmInfo:SetText(("%sGas:%d HP:%d Spd:%d Trq:%d Turn:%d Seats:%d"):format(vmIsAChassis and "[A-Chassis] " or "", #vmB.gas, #vmB.health, #vmB.speed, #vmB.torque, #vmB.turn, #vmSeats)) end)
+	end
+	vmGroup:AddButton("Detect Values", detectVehMod):AddToolTip("Scan the picked vehicle for fuel/health/speed/handling values to modify.")
+
+	local function holdMax(list)
+		for _, f in ipairs(list) do
+			local v = f.read()
+			if type(v) == "number" then vmMaxSeen[f] = math.max(vmMaxSeen[f] or v, v); f.write(vmMaxSeen[f]) end
+		end
+	end
+	local function writeAll(list, n) for _, f in ipairs(list) do f.write(n) end end
+
+	-- Stability assist: AlignOrientation that keeps the vehicle upright (preserving
+	-- yaw), responsiveness scaled by strength. Tracked so it tears down cleanly.
+	local vmStabPart = nil
+	local function clearStab()
+		if vmStabPart then
+			pcall(function()
+				local ao = vmStabPart:FindFirstChild("FurryHBE_StabAO"); if ao then ao:Destroy() end
+				local att = vmStabPart:FindFirstChild("FurryHBE_StabAtt"); if att then att:Destroy() end
+			end)
+			vmStabPart = nil
+		end
+	end
+	local function applyStab(primary, strength)
+		if vmStabPart and vmStabPart ~= primary then clearStab() end
+		if not (primary and primary.Parent) then return end
+		local att = primary:FindFirstChild("FurryHBE_StabAtt")
+		if not att then att = Instance.new("Attachment"); att.Name = "FurryHBE_StabAtt"; att.Parent = primary end
+		local ao = primary:FindFirstChild("FurryHBE_StabAO")
+		if not ao then
+			ao = Instance.new("AlignOrientation"); ao.Name = "FurryHBE_StabAO"
+			ao.Mode = Enum.OrientationAlignmentMode.OneAttachment
+			ao.Attachment0 = att; ao.RigidityEnabled = false; ao.Parent = primary
+		end
+		ao.MaxTorque = 1e6
+		ao.Responsiveness = math.clamp(strength * 200, 5, 200)
+		local look = primary.CFrame.LookVector
+		local flat = Vector3.new(look.X, 0, look.Z)
+		if flat.Magnitude < 0.01 then flat = Vector3.new(0, 0, -1) end
+		ao.CFrame = CFrame.lookAt(Vector3.new(0, 0, 0), flat.Unit)
+		vmStabPart = primary
+	end
+
+	local vmLastModel, vmStatusT = nil, 0
+	local vmConn = RunService.Heartbeat:Connect(function()
+		local m = pickedModel()
+		if m ~= vmLastModel then vmLastModel = m; clearStab(); detectVehMod() end  -- auto re-detect + restabilise on new pick
+		if not m then clearStab(); return end
+		if Toggles.vmInfGas and Toggles.vmInfGas.Value then holdMax(vmB.gas) end
+		if Toggles.vmFullHealth and Toggles.vmFullHealth.Value then holdMax(vmB.health) end
+		if Toggles.vmSetSpeed and Toggles.vmSetSpeed.Value then
+			local sp = Options.vmTopSpeed.Value
+			writeAll(vmB.speed, sp)
+			for _, s in ipairs(vmSeats) do if s.Parent then pcall(function() s.MaxSpeed = sp end) end end
+		end
+		-- Handling panel (screenshot-style).
+		if Toggles.vehBoost and Toggles.vehBoost.Value then
+			local ts, ac, tr = Options.vehTargetSpeed.Value, Options.vehAccel.Value, Options.vehTurnRate.Value
+			local ta, tac = Options.vehTurnAngle.Value, Options.vehTurnAccel.Value
+			for _, s in ipairs(vmSeats) do if s.Parent then pcall(function() s.MaxSpeed = ts; s.Torque = ac; s.TurnSpeed = tr end) end end
+			writeAll(vmB.speed, ts); writeAll(vmB.torque, ac); writeAll(vmB.turn, tr)
+			writeAll(vmB.steer, ta); writeAll(vmB.turnaccel, tac)
+		end
+		if Toggles.vehStability and Toggles.vehStability.Value then
+			applyStab(vmPrimary(), Options.vehStabilityStrength.Value)
+		else
+			clearStab()
+		end
+		-- Live confidence readout (throttled): network ownership + did a write hold?
+		local now = tick()
+		if now - vmStatusT > 0.4 then
+			vmStatusT = now
+			if Toggles.vehKeepOwnership and Toggles.vehKeepOwnership.Value and setsimulationradius then
+				pcall(function() setsimulationradius(1e6, 1e6) end)
+			end
+			local own = "?"
+			local prim = vmPrimary()
+			if prim and isnetworkowner then
+				local ok, r = pcall(function() return isnetworkowner(prim) end)
+				if ok then own = r and "YOU (writes stick)" or "server (writes may not stick)" end
+			end
+			local applied = ""
+			if Toggles.vehBoost and Toggles.vehBoost.Value and vmSeats[1] and vmSeats[1].Parent then
+				local ok2, ms = pcall(function() return vmSeats[1].MaxSpeed end)
+				if ok2 then applied = (math.abs((ms or 0) - Options.vehTargetSpeed.Value) < 1.5) and "  | speed applied OK" or "  | speed REVERTED" end
+			end
+			pcall(function() vmStatus:SetText("Owner: " .. own .. applied) end)
+		end
+	end)
+
 	Bridge:RegisterAddon("ManualVehicleHBE", {
 		onUnload = function()
 			if hbConn then pcall(function() hbConn:Disconnect() end) end
+			if vmConn then pcall(function() vmConn:Disconnect() end) end
+			pcall(clearStab)
 			pcall(restore)
 		end,
 	})
@@ -4456,6 +4934,7 @@ pcall(function()
 	local g = miscTab:AddLeftGroupbox("Vehicle ESP")
 	g:AddToggle("vehicleEspEnabled", { Text = "Enable Vehicle ESP", Default = false, Tooltip = "Draw name + type + distance on registered vehicles. (Default: OFF)" })
 	g:AddToggle("vehicleEspAutoTrack", { Text = "Auto-Track Vehicles", Default = true, Tooltip = "Continuously find drivable vehicles (anything with a\nVehicleSeat) and keep the list LIVE -- new spawns are added,\ndestroyed/despawned ones are removed automatically, so it\nnever shows a car you spawned ages ago. (Default: ON)" })
+	g:AddToggle("vehicleEspWheelCars", { Text = "Detect Wheel-Cars (no seat)", Default = false, Tooltip = "VEH-ESP2: also track cars that are a single model with no\nVehicleSeat (just tires + body) -- e.g. other players' cars.\nHeuristic (>=2 wheel/tire parts); may occasionally over-match. (Default: OFF)" })
 	g:AddDropdown("vehicleEspList", { Text = "Registered Vehicles", Values = {}, Multi = false, AllowNull = true, Tooltip = "Vehicles currently tracked. (Default: none)" })
 	g:AddDropdown("vehicleEspType", { Text = "Mark As", Values = { "Car", "Helicopter", "Boat", "Plane" }, Default = "Car", Multi = false, AllowNull = false, Tooltip = "Type to tag the selected vehicle with (saved to disk). (Default: Car)" })
 
@@ -4505,9 +4984,49 @@ pcall(function()
 		return added
 	end
 
+	-- VEH-ESP2: heuristic for cars that are ONE model with no VehicleSeat (just tires
+	-- + a body), which the VehicleSeat sweep above misses for other players. A model
+	-- counts as a wheel-car if it has >=2 wheel/tire-named parts and no Humanoid.
+	local WHEEL_WORDS = { "wheel", "tire", "tyre" }
+	local function looksLikeWheelCar(m)
+		if not (m and m:IsA("Model")) then return false end
+		if m:FindFirstChildWhichIsA("Humanoid", true) then return false end   -- it's a character
+		if m:FindFirstChildWhichIsA("VehicleSeat", true) then return false end -- already covered
+		-- Model-name shortcut for boats/planes/helis that don't have wheels.
+		local mn = m.Name:lower()
+		if mn:find("boat") or mn:find("ship") or mn:find("heli") or mn:find("plane") or mn:find("jet") then return true end
+		local wheels, rotors = 0, 0
+		for _, d in ipairs(m:GetDescendants()) do
+			if d:IsA("BasePart") then
+				local n = d.Name:lower()
+				for _, w in ipairs(WHEEL_WORDS) do if n:find(w) then wheels = wheels + 1; break end end
+				-- heli/plane rotor or boat propeller/hull also marks a vehicle.
+				if n:find("rotor") or n:find("propeller") then rotors = rotors + 1 end
+				if n:find("hull") then return true end
+				if wheels >= 2 or rotors >= 1 then return true end
+			end
+		end
+		return false
+	end
+	-- Walk top-level models + one level into folders (where games park vehicles).
+	local function eachCandidateModel(cb)
+		for _, c in ipairs(Workspace:GetChildren()) do
+			if c:IsA("Model") then cb(c)
+			elseif c:IsA("Folder") then for _, m in ipairs(c:GetChildren()) do if m:IsA("Model") then cb(m) end end end
+		end
+	end
+	local function scanWheelCars()
+		local added = 0
+		eachCandidateModel(function(m)
+			if not isRegistered(m) and looksLikeWheelCar(m) and registerModel(m) then added = added + 1 end
+		end)
+		return added
+	end
+
 	g:AddButton("Scan Vehicles", function()
 		pruneDead()
 		local count = scanVehicles()
+		if Toggles.vehicleEspWheelCars and Toggles.vehicleEspWheelCars.Value then count = count + scanWheelCars() end
 		refreshList()
 		Library:Notify("Vehicle ESP: " .. count .. " new (" .. #registered .. " tracked)")
 	end):AddToolTip("Find models that contain a VehicleSeat and register them (Auto-Track keeps this live for you)")
@@ -4542,6 +5061,7 @@ pcall(function()
 		lastAutoScan = tick()
 		local changed = pruneDead()
 		if scanVehicles() > 0 then changed = true end
+		if Toggles.vehicleEspWheelCars and Toggles.vehicleEspWheelCars.Value and scanWheelCars() > 0 then changed = true end
 		-- Also grab the car YOU are sitting in -- covers single-model cars whose seat
 		-- the Workspace sweep might not have matched, so your own vehicle always shows.
 		pcall(function()
@@ -4613,7 +5133,7 @@ pcall(function()
 	local miscTab = Bridge.MiscTab
 	if not miscTab then return end
 	local lPlayer = Players.LocalPlayer
-	local AMMO_PAT = { "ammo", "bullet", "mag", "clip", "round", "reserve", "shell" }
+	local AMMO_PAT = { "ammo", "bullet", "mag", "clip", "round", "reserve", "shell", "rocket", "arrow", "grenade", "cartridge", "stockpile" }
 
 	local g = miscTab:AddRightGroupbox("Inf Ammo / Guns")
 	g:AddToggle("infAmmoEnabled", { Text = "Enable Inf Ammo", Default = false, Tooltip = "Continuously refills numeric ammo values on your equipped gun(s).\nClient-side heuristic; some games keep ammo server-side. (Default: OFF)" })
@@ -4644,9 +5164,13 @@ pcall(function()
 		Options.infAmmoGuns.Values = {}; Options.infAmmoGuns:SetValues(); pcall(function() Options.infAmmoGuns:SetValue({}) end)
 	end)
 
+	-- Manual override: type the exact name of a value the game uses for ammo and it
+	-- gets treated as ammo by every detection strategy below.
+	g:AddInput("infAmmoManualName", { Text = "Manual Ammo Name", Default = "", Tooltip = "Extra name to treat as ammo (e.g. 'Bullets', 'CurrentAmmo').\nEmpty = use the built-in keywords only." })
 	local function isAmmoName(n)
 		n = n:lower()
 		for _, p in ipairs(AMMO_PAT) do if n:find(p) then return true end end
+		if Options.infAmmoManualName and Options.infAmmoManualName.Value ~= "" and n:find(Options.infAmmoManualName.Value:lower()) then return true end
 		return false
 	end
 	local detLabel = g:AddLabel("Detection: idle", true)
@@ -4691,10 +5215,19 @@ pcall(function()
 		end
 		return out
 	end
+	-- Player-side: covers ammo kept OUTSIDE the gun -- separate inventory items like
+	-- "5.56 Ammo", reserve counts in the Backpack, leaderstats, PlayerGui, etc.
+	-- Scans both NumberValue/IntValue names AND numeric attributes anywhere on the
+	-- player so games that store ammo as an attribute are handled too.
 	local function stratPlayerSide(_)
 		local out = {}
 		for _, d in ipairs(lPlayer:GetDescendants()) do
 			if (d:IsA("IntValue") or d:IsA("NumberValue")) and isAmmoName(d.Name) then out[#out + 1] = fieldFromValue(d) end
+			pcall(function()
+				for an, av in pairs(d:GetAttributes()) do
+					if type(av) == "number" and isAmmoName(an) then out[#out + 1] = fieldFromAttr(d, an) end
+				end
+			end)
 		end
 		return out
 	end
@@ -4798,6 +5331,18 @@ pcall(function()
 		"Improvements batch 1: per-game settings profiles (auto-save/load by PlaceId), a master PANIC/Reset-All button, global Rainbow ESP with a speed slider, animated chams Glow Pulse, a vehicle anti-fling clamp on the speed jolt, and an on-screen watermark showing tracked-player count and error status. Each was added as an isolated module so it can't affect the core.",
 		"Improvements batch 2: Smart Jitter (smooth sine size-variation) and a Max-Plausible cap for safer extension, ESP line-thickness + distance-fade, Vehicle ESP now shows the driver/occupant name, and the per-game profile now persists every add-on's settings too (unified persistence). Remaining draft items (aim-resolver modes, dropdown search, blurred/animated UI) are game/fork-specific and intentionally left for dedicated passes.",
 		"Adaptive Inf-Ammo resolver: it now tries detection strategies in order (named values, attributes, Configuration folders, player-side values) and falls through until one finds the ammo, caching the winner per gun. If all fail, a learning detector watches the gun and adopts any number that drops when you fire. A label shows which method detected.",
+		"V8 fix + feature pass. ESP now auto-routes Potassium/Solara through the GUI fallback (native Drawing constructs but doesn't render there) so names, 2D boxes and tracers finally show; the fallback overlay was corrected with IgnoreGuiInset and round circles, chams default to a visible red/white instead of invisible black, and Precision no longer freezes the target -- it defaults to extending the Head instead of the HumanoidRootPart (resizing the root is what froze them), sets enlarged parts Massless, and adds target stickiness so the lock stops thrashing between similar-distance players. New Combat tab adds a Weapon Reader (reads the held tool's name/type) and Target Groups (drag-select a box over players to track them with a cyan highlight). Added a Force-Restore-All button for stuck hitboxes; override the ESP path with getgenv().FurryHBE_ForceGuiESP / _ForceNativeESP.",
+		"Silent Melee batch on the Combat tab. Left-click (or optional Kill Aura) fires a touch between your weapon's parts -- or your bare fists when no tool is held -- and the chosen target via firetouchinterest, so the game's own .Touched damage handler lands the hit with no hooks. Targets are picked by Closest-to-Crosshair, Closest-in-Range, or your whole Target Group, with melee-only gating, team/whitelist ignores, a melee-reach range limit, and a shiftlock aim ring that turns green on lock. Target Groups also gained an Add-Players-in-Radius button to grab everyone within X studs.",
+		"MELEE-COLLIDE: the Tool Expander gained a Non-Collidable Hitbox option (on by default). The enlarged tool hitbox now keeps CanTouch on (so the game's own touch-damage still lands) while CanCollide is forced off and the part is made Massless, so the bigger hitbox no longer shoves you/objects, snags on the world, or drags your character. Originals (size + collision/touch/mass) are captured per part and fully restored on un-expand, toggle-off and unload.",
+		"MELEE-PEN + Silent Melee confidence pass. Silent Melee gained Wall Penetration (hit through walls, or turn off for a line-of-sight check) and Shield Bypass (skip the target's shield parts so the touch lands on the body), backed by a manual Pick-Shield hold-picker that registers a shield model's name as a fallback shield matcher for every player. Reliability was raised by firing both firetouchinterest AND the weapon's actual Touched connections via getconnections():Fire(target), plus a live readout that detects whether the held weapon is touch-based and confirms when a target's HP actually drops.",
+		"F10 Extract / Calibrate Game: a new Calibrate tab fingerprints the current place and auto-detects non-standard character part names (custom/rthro rigs), gun tools, shields, the melee damage mechanism, vehicle seats and team count. Detected parts/guns/shields are auto-applied to the HBE, Inf-Ammo and Melee-shield lists (each gated by a toggle), with a full on-screen report. The extracted profile can be saved per PlaceId and auto-loads on startup, so each game self-configures after one scan.",
+		"Vehicle + utility batch. VEH-MOD adds gas/health/top-speed control on the manually-picked vehicle (detects fuel/health/speed NumberValues + attributes + VehicleSeat.MaxSpeed; Infinite holds each at its highest seen value). VEH-ESP2 adds a wheel-car heuristic so single-model cars with no VehicleSeat (other players' cars) get tracked. Inf-Ammo now also scans player-side numeric attributes and a wider keyword set for separate inventory ammo. Added a type-to-filter search on the player lists and a Bridge:Connect tracked-connection helper for leak-free unloads.",
+		"Tool Hitbox Editor (TOOL-RESIZE + TOOL-VIZ) on the Combat tab. A native btools-style Handles gizmo lets you drag a tool's hitbox faces to resize it in 3D, with X/Y/Z sliders for precise sizing and a live green SelectionBox showing the hitbox extent -- the tool's own mesh visual is untouched (only the BasePart size changes), and the edited part is kept non-collidable + CanTouch so it still does touch-damage over the bigger area. Edit your held weapon or hold-pick any part; Reset-to-Original and Stop-Editing buttons manage it.",
+		"Precision + tooling polish. PRECISION-OVERHAUL/F11 adds a Resolver (Closest-to-Crosshair / Closest-Distance / Lowest-Health) and a Velocity-Lead slider that predicts a target's position by its velocity when locking. TOOL-OVERHAUL adds a one-click 'Add & Expand Held Weapon' button. The Miscellaneous tab was renamed Vehicle/Misc for clarity. Whole file syntax-validated with the Luau compiler.",
+		"Vehicle Tuning panel on the manually-picked vehicle. Picking a vehicle now auto-detects its fuel/health/top-speed plus handling values (torque/turn-speed/steer-angle/turn-accel) and the VehicleSeat. A screenshot-style panel exposes Speed Boost + Target Speed, Acceleration, Turn Rate, Turn Angle, Turn Acceleration, and a Stability Assist (anti-rollover AlignOrientation) with a Strength slider -- each writing to the detected VehicleSeat and matching tune values on the car you drive. A live readout uses isnetworkowner + a write read-back to show whether YOU own the vehicle (writes stick) or the server reverts them, so you instantly know if tuning will work in that game.",
+		"Confidence + reach pass. ESP gained a backend readout, a Force-Backend override (Auto/Native/GUI) and a Test-Backends button that paints a native + a GUI marker so you can SEE which renders, plus a live 'ESP drawn N/N' count. Vehicle tuning now detects A-Chassis and requires its Tune module to drive steer/turn values directly. Game profiles export/import as shareable base64 strings via the clipboard. A hook-free Remote Replay tool fires a chosen RemoteEvent at the nearest target for RemoteEvent-damage games. Whole file re-validated with the Luau compiler (clean) with no duplicate control keys.",
+		"Improvements + tailoring pass. Vehicle: Keep-Ownership (setsimulationradius) to make tuning writes stick, and Vehicle ESP now also finds boats/planes/helis (rotor/propeller/hull/name heuristics). Weapon Reader reports detected damage/range. Precision shows a [FROZEN?] warning when a locked target's velocity flatlines. Teleport notifies if you rubberband back. The HBE tab shows a heuristic Detection-risk estimate from your settings. Inf-Ammo takes a manual ammo-value name that extends every detection strategy. F10's report now counts RemoteEvents. All Luau-compiler validated.",
+		"Performance pass. The per-player HBE and ESP loops no longer spawn a fresh coroutine per player per frame (Update/UpdateESP never yield, so task.spawn was pure allocation -- now a direct pcall, same error isolation, much cheaper). The Silent-Melee crosshair throttles its target scan + LOS raycast to ~12Hz while the crosshair still tracks every frame. A Half-Rate ESP toggle renders ESP every other frame (~30fps) to roughly halve its CPU cost on demand.",
 	}
 	local function verNum(i) return 1 + 0.5 * (i - 1) end
 	local function fmtV(n) return "V" .. (n == math.floor(n) and tostring(math.floor(n)) or tostring(n)) end
@@ -4965,16 +5510,21 @@ pcall(function()
 		"espTracerToggled","espSkeletonToggled","espHealthBarToggled","espNameType","espMaxDistance",
 		-- ESP extras + anti-detect
 		"espRainbow","espRainbowSpeed","espThickness","espDistanceFade","espChamsGlow",
-		"priorityFlash","smartJitter","maxPlausibleMult","espWhitelisted","espAntiOverlap","espOverlapGap",
+		"priorityFlash","smartJitter","maxPlausibleMult","espWhitelisted","espAntiOverlap","espOverlapGap","espHalfRate",
 		-- Add-on modules (unified persistence)
 		"precisionEnabled","precisionExclusive","precisionHitboxSize","precisionTransparency","precisionShape",
-		"precisionCollisions","autoSelectTarget","selectionRadius","dynamicScalingEnabled",
+		"precisionCollisions","autoSelectTarget","selectionRadius","precisionResolver","precisionLeadTime","dynamicScalingEnabled",
 		"scalingCloseFactor","scalingFarFactor","scalingThreshold",
 		"vehicleAssist","vehicleJoltPower","vehicleJoltRelative","vehicleTripleTap","vehicleAccelerator","vehicleTopSpeed","vehicleAccelRate","vehicleStabilizer","vehicleSpeedLimiter","vehicleSpeedCap","vehicleManualMode",
-		"toolExpanderEnabled","toolExpandSize","toolAutoApply","toolAutoScanEquip",
-		"infAmmoEnabled","infAmmoAllTools","infAmmoAmount",
-		"vehicleEspEnabled","vehicleEspAutoTrack","mvHbeEnabled","mvHbeSize","mvHbeTransparency","mvHbeCollisions","mvHbeWholeModel",
+		"toolExpanderEnabled","toolExpandSize","toolAutoApply","toolAutoScanEquip","toolNonCollide",
+		"infAmmoEnabled","infAmmoAllTools","infAmmoAmount","infAmmoManualName",
+		"vehicleEspEnabled","vehicleEspAutoTrack","vehicleEspWheelCars","mvHbeEnabled","mvHbeSize","mvHbeTransparency","mvHbeCollisions","mvHbeWholeModel",
+		"vmInfGas","vmFullHealth","vmSetSpeed","vmTopSpeed",
+		"vehBoost","vehTargetSpeed","vehAccel","vehTurnRate","vehTurnAngle","vehTurnAccel","vehStability","vehStabilityStrength","vehKeepOwnership",
 		"streamerMaster","hideFOVCircle","hidePlayerESP","hideChams","hideHitboxGlow",
+		"weaponReaderAuto","groupRadius",
+		"silentMeleeEnabled","silentMeleeMode","silentMeleeRange","silentMeleeFOV","silentMeleeOnlyMelee","silentMeleeAura","silentMeleeAuraRate","silentMeleeIgnoreTeam","silentMeleeIgnoreWL","silentMeleeCrosshair","silentMeleeWallPen","silentMeleeShieldBypass","shieldNames",
+		"calApplyParts","calApplyAmmo","calApplyShields",
 	}
 	local g = profilesTab:AddLeftGroupbox("Per-Game Profile")
 	g:AddLabel("Game PlaceId: " .. tostring(game.PlaceId), true)
@@ -5023,6 +5573,8 @@ pcall(function()
 			"streamerMaster", "infAmmoEnabled", "vehicleEspEnabled", "toolExpanderEnabled",
 			"vehicleSpeedLimiter", "vehicleStabilizer", "outlineMode", "espNameToggled", "espHighlightToggled",
 			"espBoxToggled", "espTracerToggled", "espSkeletonToggled", "fovFilterToggled",
+			"dragSelectMode", "silentMeleeEnabled", "silentMeleeAura",
+			"vmInfGas", "vmFullHealth", "vmSetSpeed", "vehBoost", "vehStability", "rrAuto",
 		}) do
 			pcall(function() if Toggles[k] then Toggles[k]:SetValue(false) end end)
 		end
@@ -5088,6 +5640,931 @@ task.spawn(function()
 			end
 		end
 	end)
+end)
+
+-- ===== [V8] Combat tab: Weapon Reader + Target Groups ======================
+-- Self-contained add-on block (one isolated pcall, appended at the end per the
+-- build rules). Foundation for the future Melee/Silent-Aim work: it exposes the
+-- read weapon on Bridge.Weapon and the drag-selected group on Bridge.TargetGroup.
+pcall(function()
+	local combatTab = mainWindow:AddTab("Combat")
+
+	-- ---- Weapon Reader -----------------------------------------------------
+	local wrGroup    = combatTab:AddLeftGroupbox("Weapon Reader")
+	local heldLabel  = wrGroup:AddLabel("Held: none")
+	local typeLabel  = wrGroup:AddLabel("Type: -")
+	wrGroup:AddToggle("weaponReaderAuto", { Text = "Auto-Read Held Weapon", Default = true, Tooltip = "Continuously read the name/type of the tool you're holding. (Default: ON)" })
+
+	Bridge.Weapon = Bridge.Weapon or { name = nil, type = nil, tool = nil }
+
+	-- Heuristic weapon-type classifier from the tool/model name.
+	local function classify(tool)
+		local n = tool.Name:lower()
+		local function has(...) for _, w in ipairs({ ... }) do if n:find(w) then return true end end return false end
+		if has("sword", "blade", "katana", "knife", "dagger", "machete", "axe", "scythe", "saber") then return "Melee (blade)" end
+		if has("fist", "glove", "punch", "knuckle") then return "Melee (fist)" end
+		if has("bat", "hammer", "club", "mace", "staff", "spear", "pole", "pipe", "wrench") then return "Melee (blunt)" end
+		if has("bow", "crossbow") then return "Ranged (bow)" end
+		if has("gun", "rifle", "pistol", "smg", "shotgun", "sniper", "ak", "glock", "launcher", "uzi", "deagle") then return "Ranged (gun)" end
+		if tool:FindFirstChild("Handle") then return "Tool (unknown)" end
+		return "Unknown"
+	end
+
+	local function currentTool()
+		local char = lPlayer.Character
+		if not char then return nil end
+		for _, t in ipairs(char:GetChildren()) do
+			if t:IsA("Tool") then return t end
+		end
+		return nil
+	end
+
+	-- Read a numeric stat (Value or attribute) whose name matches any keyword.
+	local function findStat(tool, words)
+		for _, d in ipairs(tool:GetDescendants()) do
+			if d:IsA("NumberValue") or d:IsA("IntValue") then
+				local n = d.Name:lower()
+				for _, w in ipairs(words) do if n:find(w) then return d.Value end end
+			end
+		end
+		local found
+		pcall(function()
+			for _, d in ipairs(tool:GetDescendants()) do
+				for an, av in pairs(d:GetAttributes()) do
+					if type(av) == "number" then local ln = an:lower() for _, w in ipairs(words) do if ln:find(w) then found = av; return end end end
+				end
+			end
+		end)
+		return found
+	end
+	local function readNow()
+		local t = currentTool()
+		if t then
+			Bridge.Weapon.tool, Bridge.Weapon.name, Bridge.Weapon.type = t, t.Name, classify(t)
+			Bridge.Weapon.damage = findStat(t, { "damage", "dmg" })
+			Bridge.Weapon.range = findStat(t, { "range", "reach", "distance" })
+			heldLabel:SetText("Held: " .. t.Name)
+			local extra = ""
+			if Bridge.Weapon.damage then extra = extra .. "  dmg:" .. tostring(Bridge.Weapon.damage) end
+			if Bridge.Weapon.range then extra = extra .. "  rng:" .. tostring(Bridge.Weapon.range) end
+			typeLabel:SetText("Type: " .. Bridge.Weapon.type .. extra)
+		else
+			Bridge.Weapon.tool, Bridge.Weapon.name, Bridge.Weapon.type = nil, nil, nil
+			heldLabel:SetText("Held: none")
+			typeLabel:SetText("Type: -")
+		end
+		return t
+	end
+
+	wrGroup:AddButton("Read Held Weapon", function()
+		readNow()
+		Library:Notify(Bridge.Weapon.name and ("Weapon: " .. Bridge.Weapon.name .. " [" .. Bridge.Weapon.type .. "]") or "No weapon held")
+	end):AddToolTip("Read the equipped tool's name and guess its type (melee/ranged).")
+
+	local wrLast = 0
+	local wrConn = RunService.Heartbeat:Connect(function()
+		if not (Toggles.weaponReaderAuto and Toggles.weaponReaderAuto.Value) then return end
+		local now = tick(); if now - wrLast < 0.3 then return end; wrLast = now
+		pcall(readNow)
+	end)
+
+	-- ---- Target Groups (drag-select players into an ESP group) -------------
+	local tgGroup = combatTab:AddRightGroupbox("Target Groups")
+	tgGroup:AddLabel("Drag-select players into a tracked group.\nThey get a cyan highlight, independent of normal ESP.", true)
+	local tgCountLabel = tgGroup:AddLabel("Group: 0 players")
+
+	local groupMembers    = {}   -- [Player] = true
+	local groupHighlights = {}   -- [Player] = Highlight
+	Bridge.TargetGroup = groupMembers  -- exposed for future silent-aim / melee
+
+	local GuiService = game:GetService("GuiService")
+
+	-- Selection-rectangle overlay. IgnoreGuiInset = absolute screen pixels, which
+	-- matches UserInputService:GetMouseLocation(). WorldToViewportPoint excludes
+	-- the topbar inset, so player points get +inset.Y when hit-testing below.
+	local selGui = Instance.new("ScreenGui")
+	selGui.Name = "FurryHBE_DragSelect"; selGui.ResetOnSpawn = false
+	selGui.IgnoreGuiInset = true; selGui.DisplayOrder = 50
+	selGui.Parent = getSafeGuiParent()
+	local selBox = Instance.new("Frame")
+	selBox.BackgroundColor3 = Color3.fromRGB(0, 200, 255); selBox.BackgroundTransparency = 0.75
+	selBox.BorderSizePixel = 0; selBox.Visible = false; selBox.Parent = selGui
+	local selStroke = Instance.new("UIStroke"); selStroke.Color = Color3.fromRGB(0, 220, 255)
+	selStroke.Thickness = 1; selStroke.Parent = selBox
+
+	local function setGroupHighlight(plr, on)
+		if on then
+			if not groupHighlights[plr] then
+				local hl = Instance.new("Highlight")
+				hl.FillColor = Color3.fromRGB(0, 200, 255); hl.OutlineColor = Color3.fromRGB(0, 255, 255)
+				hl.FillTransparency = 0.5; hl.OutlineTransparency = 0
+				hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+				hl.Parent = getSafeGuiParent()
+				groupHighlights[plr] = hl
+			end
+		elseif groupHighlights[plr] then
+			pcall(function() groupHighlights[plr]:Destroy() end)
+			groupHighlights[plr] = nil
+		end
+	end
+
+	local function refreshCount()
+		local n = 0; for _ in pairs(groupMembers) do n += 1 end
+		tgCountLabel:SetText("Group: " .. n .. " players")
+	end
+
+	tgGroup:AddToggle("dragSelectMode", { Text = "Drag-Select Mode", Default = false, Tooltip = "Hold left-mouse and drag a box over players to add them\nto the group. Toggle off when done. (Default: OFF)" }):OnChanged(function()
+		if not Toggles.dragSelectMode.Value then selBox.Visible = false end
+	end)
+	tgGroup:AddButton("Clear Group", function()
+		for plr in pairs(groupMembers) do setGroupHighlight(plr, false) end
+		table.clear(groupMembers); refreshCount()
+		Library:Notify("Target group cleared")
+	end):AddToolTip("Remove everyone from the target group.")
+
+	local dragStart = nil
+	local function dragActive() return Toggles.dragSelectMode and Toggles.dragSelectMode.Value end
+
+	local cBegan = UserInputService.InputBegan:Connect(function(input, gp)
+		if not dragActive() or gp then return end
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragStart = UserInputService:GetMouseLocation()
+			selBox.Position = UDim2.fromOffset(dragStart.X, dragStart.Y)
+			selBox.Size = UDim2.fromOffset(0, 0)
+			selBox.Visible = true
+		end
+	end)
+	local cChanged = UserInputService.InputChanged:Connect(function(input)
+		if not dragActive() or not dragStart then return end
+		if input.UserInputType == Enum.UserInputType.MouseMovement then
+			local cur = UserInputService:GetMouseLocation()
+			local x0, y0 = math.min(dragStart.X, cur.X), math.min(dragStart.Y, cur.Y)
+			local x1, y1 = math.max(dragStart.X, cur.X), math.max(dragStart.Y, cur.Y)
+			selBox.Position = UDim2.fromOffset(x0, y0)
+			selBox.Size = UDim2.fromOffset(x1 - x0, y1 - y0)
+		end
+	end)
+	local cEnded = UserInputService.InputEnded:Connect(function(input)
+		if not dragStart then return end
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			local cur = UserInputService:GetMouseLocation()
+			local x0, y0 = math.min(dragStart.X, cur.X), math.min(dragStart.Y, cur.Y)
+			local x1, y1 = math.max(dragStart.X, cur.X), math.max(dragStart.Y, cur.Y)
+			dragStart = nil; selBox.Visible = false
+			if (x1 - x0) < 6 and (y1 - y0) < 6 then return end  -- ignore a click
+			local cam = Workspace.CurrentCamera
+			local inset = GuiService:GetGuiInset()
+			local added = 0
+			for _, plr in ipairs(Players:GetPlayers()) do
+				if plr ~= lPlayer then
+					local char = plr.Character
+					local node = char and (char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart"))
+					if node then
+						local sp, on = cam:WorldToViewportPoint(node.Position)
+						local mx, my = sp.X, sp.Y + inset.Y
+						if on and mx >= x0 and mx <= x1 and my >= y0 and my <= y1 then
+							if not groupMembers[plr] then
+								groupMembers[plr] = true; setGroupHighlight(plr, true); added += 1
+							end
+						end
+					end
+				end
+			end
+			refreshCount()
+			Library:Notify("Added " .. added .. " player(s) to group")
+		end
+	end)
+
+	-- Re-adorn highlights to current characters (respawns) and prune leavers.
+	local tgConn = RunService.Heartbeat:Connect(function()
+		for plr in pairs(groupMembers) do
+			if not plr.Parent then
+				setGroupHighlight(plr, false); groupMembers[plr] = nil; refreshCount()
+			else
+				local hl = groupHighlights[plr]
+				if hl then hl.Adornee = plr.Character end
+			end
+		end
+	end)
+
+	-- Radius add: "select all players within X studs" into the group.
+	tgGroup:AddSlider("groupRadius", { Text = "Radius (studs)", Min = 5, Max = 500, Default = 60, Rounding = 0, Tooltip = "Range used by 'Add Players in Radius'. (Default: 60)" })
+	tgGroup:AddButton("Add Players in Radius", function()
+		local lchar = lPlayer.Character
+		local lroot = lchar and (lchar:FindFirstChild("HumanoidRootPart") or lchar:FindFirstChild("Head"))
+		if not lroot then Library:Notify("No character"); return end
+		local r, added = Options.groupRadius.Value, 0
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if plr ~= lPlayer then
+				local c = plr.Character
+				local node = c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Head"))
+				if node and (node.Position - lroot.Position).Magnitude <= r and not groupMembers[plr] then
+					groupMembers[plr] = true; setGroupHighlight(plr, true); added += 1
+				end
+			end
+		end
+		refreshCount()
+		Library:Notify("Added " .. added .. " player(s) within " .. r .. " studs")
+	end):AddToolTip("Add every player within the radius above to the target group.")
+
+	-- ---- Silent Melee Aim --------------------------------------------------
+	-- On swing / left-click, simulate a touch between your weapon's parts and the
+	-- chosen target's parts via firetouchinterest, so the game's own server-side
+	-- .Touched damage handler registers the hit. No hooks (rule #3) -- it's a direct
+	-- API call. Works for tool melee and (no tool) bare-fist games via your arms.
+	local smGroup = combatTab:AddRightGroupbox("Silent Melee")
+	smGroup:AddToggle("silentMeleeEnabled", { Text = "Enable Silent Melee", Default = false, Tooltip = "On left-click, fire a touch between your weapon and the\nchosen target so the hit lands even if you aren't aiming at\nthem. Uses firetouchinterest (no hooks). (Default: OFF)" })
+	smGroup:AddDropdown("silentMeleeMode", { Text = "Target Mode", AllowNull = false, Multi = false, Values = { "Closest to Crosshair", "Closest in Range", "Target Group" }, Default = "Closest to Crosshair", Tooltip = "How target(s) are chosen each swing. Target Group hits\neveryone in your drag/radius group within range. (Default: Closest to Crosshair)" })
+	smGroup:AddSlider("silentMeleeRange", { Text = "Max Range (studs)", Min = 5, Max = 60, Default = 18, Rounding = 0, Tooltip = "Only hit targets within this distance (melee reach). (Default: 18)" })
+	smGroup:AddSlider("silentMeleeFOV", { Text = "Crosshair FOV (px)", Min = 20, Max = 600, Default = 160, Rounding = 0, Tooltip = "For 'Closest to Crosshair': max screen distance from center. (Default: 160)" })
+	smGroup:AddToggle("silentMeleeOnlyMelee", { Text = "Only Melee Weapons", Default = true, Tooltip = "Only fire while holding a melee weapon (per the Weapon Reader).\nOff = any tool / bare fists. (Default: ON)" })
+	smGroup:AddToggle("silentMeleeAura", { Text = "Auto (Kill Aura)", Default = false, Tooltip = "Continuously hit targets in range while enabled, instead\nof only on click. (Default: OFF)" })
+	smGroup:AddSlider("silentMeleeAuraRate", { Text = "Aura Rate (/s)", Min = 1, Max = 20, Default = 8, Rounding = 0, Tooltip = "How many times per second Kill Aura fires. (Default: 8)" })
+	smGroup:AddToggle("silentMeleeIgnoreTeam", { Text = "Ignore Team", Default = true, Tooltip = "Never hit teammates. (Default: ON)" })
+	smGroup:AddToggle("silentMeleeIgnoreWL", { Text = "Ignore Whitelisted", Default = true, Tooltip = "Never hit whitelisted players. (Default: ON)" })
+	smGroup:AddToggle("silentMeleeCrosshair", { Text = "Crosshair on Shiftlock", Default = true, Tooltip = "Show an aim ring at screen center while shiftlocked;\nit turns green when a target is locked. (Default: ON)" })
+	smGroup:AddToggle("silentMeleeWallPen", { Text = "Wall Penetration", Default = true, Tooltip = "MELEE-PEN: hit targets through walls/objects (touch ignores\nline-of-sight). Turn OFF to only hit targets you can actually\nsee (more legit). (Default: ON)" })
+	smGroup:AddToggle("silentMeleeShieldBypass", { Text = "Shield Bypass", Default = true, Tooltip = "MELEE-PEN: skip the target's shield parts and land the touch\ndirectly on their body, so sword+shield blocks are bypassed.\nUses the keyword list + your registered shields. (Default: ON)" })
+	local smInfo = smGroup:AddLabel("Lock: off")
+	local smMech = smGroup:AddLabel("Damage: ?")
+
+	-- Center aim ring (same DrawingFallback path as ESP).
+	local smCross = DrawingFallback.new("Circle")
+	smCross.Thickness = 2; smCross.Filled = false; smCross.NumSides = 32; smCross.Radius = 4; smCross.Visible = false
+
+	-- ---- Shield registry (MELEE-PEN shield bypass) -------------------------
+	-- Built-in keywords + a manual hold-pick so you can register an oddly-named
+	-- shield model; registered names then match that shield on EVERY player as a
+	-- fallback to the keyword list.
+	local SHIELD_KEYWORDS = { "shield", "block", "guard", "parry", "defend", "buckler", "barrier" }
+	local shieldGroup = combatTab:AddLeftGroupbox("Melee: Shields")
+	shieldGroup:AddLabel("Register a shield model so Shield Bypass\ncan skip it on every player.", true)
+	shieldGroup:AddDropdown("shieldNames", { Text = "Known Shields", AllowNull = true, Multi = true, Values = {}, Tooltip = "Part/model names treated as shields (besides the built-in\nkeywords). Use Pick Shield to add one. (Default: none)" })
+	local function addShieldName(name)
+		if not name or name == "" then return end
+		local vals = Options.shieldNames.Values or {}
+		if not table.find(vals, name) then
+			table.insert(vals, name); Options.shieldNames.Values = vals; Options.shieldNames:SetValues()
+		end
+		pcall(function()
+			local sel = Options.shieldNames.Value
+			if type(sel) == "table" then sel[name] = true; Options.shieldNames:SetValue(sel) end
+		end)
+	end
+	shieldGroup:AddButton("Pick Shield (hold-click)", function()
+		Bridge:StartHoldPick({ color = Color3.fromRGB(80, 160, 255), onPick = function(part)
+			addShieldName(part.Name)
+			local model = part:FindFirstAncestorWhichIsA("Model")
+			if model and model ~= part and model ~= Workspace then addShieldName(model.Name) end
+			Library:Notify("Registered shield: " .. part.Name)
+		end })
+	end):AddToolTip("Hold left-click on a shield to register its name as a shield for ALL players.")
+	shieldGroup:AddButton("Clear Shields", function()
+		Options.shieldNames.Values = {}; Options.shieldNames:SetValues(); pcall(function() Options.shieldNames:SetValue({}) end)
+		Library:Notify("Cleared registered shields")
+	end):AddToolTip("Forget every registered shield name.")
+
+	local function isShieldName(name)
+		local low = name:lower()
+		for _, kw in ipairs(SHIELD_KEYWORDS) do if low:find(kw) then return true end end
+		if Options.shieldNames then
+			for _, n in ipairs(Options.shieldNames:GetActiveValues()) do if name == n then return true end end
+		end
+		return false
+	end
+	local function isShieldPart(part)
+		if isShieldName(part.Name) then return true end
+		local p, hops = part.Parent, 0
+		while p and hops < 4 do
+			if isShieldName(p.Name) then return true end
+			p = p.Parent; hops += 1
+		end
+		return false
+	end
+	-- Line-of-sight test (used when Wall Penetration is OFF): true if nothing solid
+	-- sits between you and the target part (the target's own character is ignored).
+	local function hasLOS(fromPos, toPart)
+		local ok, clear = pcall(function()
+			local params = RaycastParams.new()
+			params.FilterType = Enum.RaycastFilterType.Exclude
+			params.FilterDescendantsInstances = { lPlayer.Character, toPart.Parent }
+			local res = Workspace:Raycast(fromPos, toPart.Position - fromPos, params)
+			return res == nil
+		end)
+		return ok and clear or false
+	end
+
+	local function meleeTeammate(plr)
+		local ok, same = pcall(function()
+			if lPlayer.Team ~= nil or plr.Team ~= nil then return lPlayer.Team == plr.Team end
+			return lPlayer.TeamColor == plr.TeamColor
+		end)
+		return ok and same or false
+	end
+	local function meleeValid(plr)
+		if plr == lPlayer then return false end
+		local c = plr.Character
+		local hum = c and c:FindFirstChildWhichIsA("Humanoid")
+		if not (c and hum and hum.Health > 0) then return false end
+		if Toggles.silentMeleeIgnoreWL.Value and Options.whitelistPlayerList and table.find(Options.whitelistPlayerList:GetActiveValues(), plr.Name) then return false end
+		if Toggles.silentMeleeIgnoreTeam.Value and meleeTeammate(plr) then return false end
+		return true
+	end
+	local function localRoot()
+		local c = lPlayer.Character
+		return c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Head"))
+	end
+	local function pickMeleeTarget()
+		local cam = Workspace.CurrentCamera
+		local lroot = localRoot()
+		if not lroot then return nil end
+		local mode = Options.silentMeleeMode.Value
+		local maxR = Options.silentMeleeRange.Value
+		local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+		local fov = Options.silentMeleeFOV.Value
+		local best, bestScore = nil, math.huge
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if meleeValid(plr) then
+				local c = plr.Character
+				local node = c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Head")
+				if node then
+					local d3 = (node.Position - lroot.Position).Magnitude
+					-- Wall Penetration OFF => require clear line of sight to the target.
+					local losOK = (Toggles.silentMeleeWallPen and Toggles.silentMeleeWallPen.Value) or hasLOS(lroot.Position, node)
+					if d3 <= maxR and losOK then
+						if mode == "Closest in Range" then
+							if d3 < bestScore then best, bestScore = plr, d3 end
+						else  -- Closest to Crosshair
+							local sp, on = cam:WorldToViewportPoint(node.Position)
+							if on then
+								local d2 = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+								if d2 <= fov and d2 < bestScore then best, bestScore = plr, d2 end
+							end
+						end
+					end
+				end
+			end
+		end
+		return best
+	end
+	-- Your weapon's parts: the held tool's baseparts, or (no tool) your arms/hands.
+	local function weaponHitParts()
+		local c = lPlayer.Character
+		if not c then return {} end
+		local tool
+		for _, t in ipairs(c:GetChildren()) do if t:IsA("Tool") then tool = t break end end
+		local parts = {}
+		if tool then
+			for _, d in ipairs(tool:GetDescendants()) do if d:IsA("BasePart") then parts[#parts + 1] = d end end
+		else
+			for _, n in ipairs({ "Right Arm", "RightHand", "RightLowerArm", "Left Arm", "LeftHand" }) do
+				local p = c:FindFirstChild(n); if p and p:IsA("BasePart") then parts[#parts + 1] = p end
+			end
+		end
+		return parts
+	end
+	local function fireMeleeAt(plr)
+		local char = plr.Character
+		if not char then return false end
+		local wParts = weaponHitParts()
+		local bypass = Toggles.silentMeleeShieldBypass and Toggles.silentMeleeShieldBypass.Value
+		-- Target parts = body parts; when Shield Bypass is on, skip shield parts so
+		-- the touch lands on the body instead of being intercepted by the shield.
+		local tParts = {}
+		for _, tp in ipairs(char:GetChildren()) do
+			if tp:IsA("BasePart") and not (bypass and isShieldPart(tp)) then tParts[#tParts + 1] = tp end
+		end
+		for _, wp in ipairs(wParts) do
+			for _, tp in ipairs(tParts) do
+				-- Primary: simulate the touch so the game's own .Touched handler runs.
+				if firetouchinterest then
+					pcall(function() firetouchinterest(wp, tp, 0); firetouchinterest(wp, tp, 1) end)
+				end
+				-- Reliability boost (confidence): also directly :Fire() the weapon
+				-- part's Touched connections with the target part, which invokes the
+				-- game's damage handler even when firetouchinterest alone doesn't take.
+				if getconnections then
+					pcall(function()
+						for _, conn in ipairs(getconnections(wp.Touched)) do
+							if conn.Fire then conn:Fire(tp) end
+						end
+					end)
+				end
+			end
+		end
+		return true
+	end
+	local function meleeGatePasses()
+		if not (Toggles.silentMeleeEnabled and Toggles.silentMeleeEnabled.Value) then return false end
+		if Toggles.silentMeleeOnlyMelee.Value then
+			local t = currentTool()
+			if not t or not classify(t):find("Melee") then return false end
+		end
+		return true
+	end
+	-- Confidence aids: mechanism detector + live hit confirmation.
+	local pendingHit = nil      -- { plr, hp, t } armed after a single-target swing
+	local smLastConfirm = 0     -- tick() of the last confirmed HP drop
+	-- Does the held weapon expose .Touched connections? If so the touch path will
+	-- land; if not, it's likely a remote/raycast game and Silent Melee can't help.
+	local function detectMechanism()
+		if not getconnections then return "Damage: unknown (no getconnections)" end
+		local n = 0
+		for _, wp in ipairs(weaponHitParts()) do
+			local ok, conns = pcall(function() return getconnections(wp.Touched) end)
+			if ok and conns then n = n + #conns end
+		end
+		return n > 0 and "Damage: Touch-based detected" or "Damage: no touch conns (remote?)"
+	end
+	local function doMeleeSwing()
+		if not meleeGatePasses() then return end
+		if not firetouchinterest and not getconnections then
+			Library:Notify("Executor lacks firetouchinterest/getconnections"); return
+		end
+		if Options.silentMeleeMode.Value == "Target Group" then
+			local lroot = localRoot()
+			local maxR = Options.silentMeleeRange.Value
+			for plr in pairs(groupMembers) do
+				if meleeValid(plr) then
+					local c = plr.Character
+					local node = c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Head"))
+					if node and lroot and (node.Position - lroot.Position).Magnitude <= maxR then
+						fireMeleeAt(plr)
+					end
+				end
+			end
+		else
+			local target = pickMeleeTarget()
+			if target then
+				fireMeleeAt(target)
+				-- Arm hit-confirmation for the single target so we can prove it landed.
+				local hum = target.Character and target.Character:FindFirstChildWhichIsA("Humanoid")
+				if hum then pendingHit = { plr = target, hp = hum.Health, t = tick() } end
+			end
+		end
+	end
+
+	-- Click trigger (the swing). gameProcessed filters out menu clicks.
+	local smClickConn = UserInputService.InputBegan:Connect(function(input, gp)
+		if gp then return end
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then pcall(doMeleeSwing) end
+	end)
+	-- Optional kill-aura loop.
+	local smAuraLast = 0
+	local smAuraConn = RunService.Heartbeat:Connect(function()
+		if not (Toggles.silentMeleeAura and Toggles.silentMeleeAura.Value) then return end
+		if not meleeGatePasses() then return end
+		local now = tick()
+		local rate = (Options.silentMeleeAuraRate and Options.silentMeleeAuraRate.Value) or 8
+		if now - smAuraLast < (1 / math.max(1, rate)) then return end
+		smAuraLast = now
+		pcall(doMeleeSwing)
+	end)
+	-- Crosshair + lock readout (one scan/frame; label throttled).
+	local smLastInfo = 0
+	local smLockCache, smLockT = nil, 0
+	local smCrossConn = RunService.RenderStepped:Connect(function()
+		local enabled = Toggles.silentMeleeEnabled and Toggles.silentMeleeEnabled.Value
+		local locked = nil
+		if enabled and Options.silentMeleeMode.Value ~= "Target Group" then
+			-- Throttle the target scan to ~12 Hz (full player loop + LOS raycast is
+			-- expensive); the crosshair itself still follows every frame. (perf)
+			local now = tick()
+			if now - smLockT > 0.08 then
+				smLockT = now
+				local ok, res = pcall(pickMeleeTarget); smLockCache = ok and res or nil
+			end
+			locked = smLockCache
+		end
+		local show = enabled and Toggles.silentMeleeCrosshair and Toggles.silentMeleeCrosshair.Value
+			and UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter
+		if show then
+			local cam = Workspace.CurrentCamera
+			smCross.Position = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+			smCross.Color = locked and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 255, 255)
+			smCross.Visible = true
+		else
+			smCross.Visible = false
+		end
+		local now = tick()
+		-- Hit confirmation: did the pending single-target lose HP shortly after a swing?
+		if pendingHit then
+			local c = pendingHit.plr and pendingHit.plr.Character
+			local hum = c and c:FindFirstChildWhichIsA("Humanoid")
+			if hum and hum.Health < pendingHit.hp - 0.01 then
+				smLastConfirm = now; pendingHit = nil
+			elseif now - pendingHit.t > 0.9 then
+				pendingHit = nil
+			end
+		end
+		if now - smLastInfo > 0.2 then
+			smLastInfo = now
+			pcall(function() smInfo:SetText(enabled and ("Lock: " .. (locked and locked.Name or "none")) or "Lock: off") end)
+			-- Mechanism + recent-hit readout (confidence aid).
+			local mech = enabled and detectMechanism() or "Damage: ?"
+			if now - smLastConfirm < 2 then mech = "Hit confirmed (HP dropped)" end
+			pcall(function() smMech:SetText(mech) end)
+		end
+	end)
+
+	-- ---- Tool Hitbox Editor (TOOL-RESIZE + TOOL-VIZ) -----------------------
+	-- btools-style 3D resize: a native Handles gizmo (drag faces to resize) plus a
+	-- green SelectionBox showing the hitbox extent. The tool's actual visual (a mesh
+	-- on the Handle) is unaffected because we only change the BasePart Size, so the
+	-- original look stays while the hitbox grows; the edited part is kept non-
+	-- collidable + CanTouch so it still does touch-damage over the bigger area.
+	local teGroup = combatTab:AddLeftGroupbox("Tool Hitbox Editor")
+	local FACE_AXIS = {
+		[Enum.NormalId.Right] = Vector3.new(1, 0, 0), [Enum.NormalId.Left] = Vector3.new(1, 0, 0),
+		[Enum.NormalId.Top] = Vector3.new(0, 1, 0), [Enum.NormalId.Bottom] = Vector3.new(0, 1, 0),
+		[Enum.NormalId.Front] = Vector3.new(0, 0, 1), [Enum.NormalId.Back] = Vector3.new(0, 0, 1),
+	}
+	local tePart, teOrigSize, teSelBox, teHandles = nil, nil, nil, nil
+	-- Handles need a rendering ScreenGui (PlayerGui is the most reliable parent).
+	local teGui = Instance.new("ScreenGui")
+	teGui.Name = "FurryHBE_ToolEdit"; teGui.ResetOnSpawn = false
+	teGui.Parent = (lPlayer:FindFirstChildOfClass("PlayerGui")) or getSafeGuiParent()
+	local teInfo = teGroup:AddLabel("Editing: none")
+
+	local function teClearVisuals()
+		if teSelBox then pcall(function() teSelBox:Destroy() end); teSelBox = nil end
+		if teHandles then pcall(function() teHandles:Destroy() end); teHandles = nil end
+	end
+	local function teEdit(part)
+		if not (part and part:IsA("BasePart")) then return end
+		teClearVisuals()
+		tePart, teOrigSize = part, part.Size
+		-- TOOL-VIZ: green box showing the hitbox (mesh visual stays its own size/colour).
+		teSelBox = Instance.new("SelectionBox")
+		teSelBox.Adornee = part; teSelBox.Color3 = Color3.fromRGB(0, 255, 0)
+		teSelBox.LineThickness = 0.03; teSelBox.SurfaceColor3 = Color3.fromRGB(0, 255, 0)
+		teSelBox.SurfaceTransparency = 0.85; teSelBox.Parent = teGui
+		-- TOOL-RESIZE: native btools-style resize handles.
+		teHandles = Instance.new("Handles")
+		teHandles.Adornee = part; teHandles.Style = Enum.HandlesStyle.Resize
+		teHandles.Color3 = Color3.fromRGB(0, 200, 0); teHandles.Parent = teGui
+		local startSize
+		teHandles.MouseButton1Down:Connect(function() startSize = tePart and tePart.Size end)
+		teHandles.MouseDrag:Connect(function(face, distance)
+			if not (tePart and tePart.Parent and startSize) then return end
+			local axis = FACE_AXIS[face] or Vector3.new(0, 0, 0)
+			local ns = startSize + axis * distance
+			tePart.Size = Vector3.new(math.max(0.05, ns.X), math.max(0.05, ns.Y), math.max(0.05, ns.Z))
+			pcall(function() tePart.CanCollide = false; tePart.CanTouch = true; tePart.Massless = true end)
+			pcall(function()
+				Options.teSizeX:SetValue(tePart.Size.X); Options.teSizeY:SetValue(tePart.Size.Y); Options.teSizeZ:SetValue(tePart.Size.Z)
+			end)
+		end)
+		local tool = part:FindFirstAncestorWhichIsA("Tool")
+		teInfo:SetText("Editing: " .. (tool and tool.Name or part.Name))
+		pcall(function()
+			Options.teSizeX:SetValue(part.Size.X); Options.teSizeY:SetValue(part.Size.Y); Options.teSizeZ:SetValue(part.Size.Z)
+		end)
+	end
+	local function teHeldHitPart()
+		local c = lPlayer.Character
+		if not c then return nil end
+		for _, t in ipairs(c:GetChildren()) do
+			if t:IsA("Tool") then
+				return t:FindFirstChild("Handle") or t:FindFirstChildWhichIsA("BasePart")
+			end
+		end
+		return nil
+	end
+
+	teGroup:AddButton("Edit Held Weapon", function()
+		local p = teHeldHitPart()
+		if p then teEdit(p) else Library:Notify("Equip a tool first") end
+	end):AddToolTip("Adorn resize handles + a green box to your equipped tool's hitbox.")
+	teGroup:AddButton("Edit Picked Part (hold-click)", function()
+		Bridge:StartHoldPick({ color = Color3.fromRGB(0, 255, 0), onPick = function(part) teEdit(part) end })
+	end):AddToolTip("Hold-click any part to edit its hitbox with the handles.")
+	teGroup:AddSlider("teSizeX", { Text = "Size X", Min = 0.1, Max = 100, Default = 1, Rounding = 2 }):OnChanged(function()
+		if tePart and tePart.Parent then pcall(function() tePart.Size = Vector3.new(Options.teSizeX.Value, tePart.Size.Y, tePart.Size.Z) end) end
+	end)
+	teGroup:AddSlider("teSizeY", { Text = "Size Y", Min = 0.1, Max = 100, Default = 1, Rounding = 2 }):OnChanged(function()
+		if tePart and tePart.Parent then pcall(function() tePart.Size = Vector3.new(tePart.Size.X, Options.teSizeY.Value, tePart.Size.Z) end) end
+	end)
+	teGroup:AddSlider("teSizeZ", { Text = "Size Z", Min = 0.1, Max = 100, Default = 1, Rounding = 2 }):OnChanged(function()
+		if tePart and tePart.Parent then pcall(function() tePart.Size = Vector3.new(tePart.Size.X, tePart.Size.Y, Options.teSizeZ.Value) end) end
+	end)
+	teGroup:AddButton("Reset to Original", function()
+		if tePart and tePart.Parent and teOrigSize then pcall(function() tePart.Size = teOrigSize end) end
+	end):AddToolTip("Restore the edited part to the size it had when you started editing.")
+	teGroup:AddButton("Stop Editing (keep size)", function()
+		teClearVisuals(); tePart = nil; teInfo:SetText("Editing: none")
+	end):AddToolTip("Remove the handles/box but keep the current hitbox size.")
+
+	Bridge:RegisterAddon("CombatTab", { onUnload = function()
+		pcall(function() wrConn:Disconnect() end)
+		pcall(function() cBegan:Disconnect() end)
+		pcall(function() cChanged:Disconnect() end)
+		pcall(function() cEnded:Disconnect() end)
+		pcall(function() tgConn:Disconnect() end)
+		pcall(function() smClickConn:Disconnect() end)
+		pcall(function() smAuraConn:Disconnect() end)
+		pcall(function() smCrossConn:Disconnect() end)
+		safeRemoveDrawing(smCross)
+		for plr in pairs(groupMembers) do setGroupHighlight(plr, false) end
+		pcall(function() selGui:Destroy() end)
+		pcall(function() if tePart and tePart.Parent and teOrigSize then tePart.Size = teOrigSize end end)
+		teClearVisuals(); pcall(function() teGui:Destroy() end)
+	end })
+	print("[Combat] Weapon Reader + Target Groups + Silent Melee registered")
+end)
+
+-- ===== [V10] F10 Extract / Calibrate Game ==================================
+-- Heuristic best-effort scanner: fingerprints the current place and auto-detects
+-- character part names (custom/rthro rigs), gun tools (for Inf-Ammo), shields, the
+-- melee damage mechanism, vehicles and teams; applies what it finds to the relevant
+-- lists and can save/load the profile per PlaceId (a shareable game profile that
+-- also auto-loads on startup). All pcall-isolated; cross-module Options are nil-guarded.
+pcall(function()
+	local HttpService = game:GetService("HttpService")
+	local calTab      = mainWindow:AddTab("Calibrate")
+	local scanGroup   = calTab:AddLeftGroupbox("Game Profile / Extract")
+	local reportGroup = calTab:AddRightGroupbox("Last Scan Report")
+	local CAL_FILE    = "FurryHBE_Calibrate_" .. tostring(game.PlaceId) .. ".json"
+
+	scanGroup:AddLabel("Place: " .. tostring(game.PlaceId), true)
+	scanGroup:AddToggle("calApplyParts",  { Text = "Auto-Add Character Parts", Default = true,  Tooltip = "Add detected non-standard character part names to the HBE\npart list and select them. (Default: ON)" })
+	scanGroup:AddToggle("calApplyAmmo",    { Text = "Auto-Add Guns to Inf-Ammo", Default = true, Tooltip = "Add detected gun tools to the Inf-Ammo gun list. (Default: ON)" })
+	scanGroup:AddToggle("calApplyShields", { Text = "Auto-Register Shields", Default = false, Tooltip = "Add detected shield parts to the Melee shield list. (Default: OFF)" })
+
+	local reportLabel = reportGroup:AddLabel("Run 'Scan & Extract' to fingerprint this game.", true)
+
+	local STD_PARTS = { Head = true, HumanoidRootPart = true, Torso = true, UpperTorso = true, LowerTorso = true,
+		["Left Arm"] = true, ["Right Arm"] = true, ["Left Leg"] = true, ["Right Leg"] = true,
+		LeftUpperArm = true, LeftLowerArm = true, LeftHand = true, RightUpperArm = true, RightLowerArm = true, RightHand = true,
+		LeftUpperLeg = true, LeftLowerLeg = true, LeftFoot = true, RightUpperLeg = true, RightLowerLeg = true, RightFoot = true }
+	local AMMO_WORDS   = { "ammo", "mag", "clip", "round", "reserve", "bullet" }
+	local GUN_WORDS    = { "gun", "rifle", "pistol", "smg", "shotgun", "sniper", "ak", "glock", "launcher", "uzi", "deagle", "carbine", "revolver" }
+	local SHIELD_WORDS = { "shield", "buckler", "barrier" }
+	local function nameHas(n, words) n = n:lower() for _, w in ipairs(words) do if n:find(w) then return true end end return false end
+
+	-- Add a name to a LinoriaLib multi-dropdown's Values (and optionally select it).
+	local function addToDropdown(opt, name, select)
+		if not opt or not name or name == "" then return end
+		local vals = opt.Values or {}
+		if not table.find(vals, name) then table.insert(vals, name); opt.Values = vals; pcall(function() opt:SetValues() end) end
+		if select then pcall(function() local s = opt.Value; if type(s) == "table" then s[name] = true; opt:SetValue(s) end end) end
+	end
+
+	-- Prefer another player's full character as the rig sample; fall back to ours.
+	local function sampleCharacter()
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= lPlayer and p.Character and p.Character:FindFirstChildWhichIsA("Humanoid") then return p.Character end
+		end
+		return lPlayer.Character
+	end
+
+	local function runScan(apply)
+		local r = {}
+
+		-- 1) character parts (rig parts, skipping accessories/tool handles)
+		local char = sampleCharacter()
+		local partNames, nonStd = {}, {}
+		if char then
+			for _, d in ipairs(char:GetDescendants()) do
+				if d:IsA("BasePart") and d.Name ~= "Handle"
+					and not d:FindFirstAncestorWhichIsA("Accessory") and not d:FindFirstAncestorWhichIsA("Tool") then
+					partNames[d.Name] = true
+					if not STD_PARTS[d.Name] then nonStd[d.Name] = true end
+				end
+			end
+		end
+		local pc, nc = 0, 0
+		for _ in pairs(partNames) do pc = pc + 1 end
+		local nonStdList = {}
+		for n in pairs(nonStd) do
+			nc = nc + 1; nonStdList[#nonStdList + 1] = n
+			if apply and Toggles.calApplyParts.Value then addToDropdown(Options.extenderPartList, n, true) end
+		end
+		r[#r + 1] = ("Parts: %d total, %d non-standard"):format(pc, nc)
+		if nc > 0 then r[#r + 1] = "  + " .. table.concat(nonStdList, ", ") end
+
+		-- 2) guns / ammo (held + backpack tools)
+		local guns, ammoVals = {}, 0
+		for _, cont in ipairs({ lPlayer.Character, lPlayer:FindFirstChild("Backpack") }) do
+			if cont then
+				for _, t in ipairs(cont:GetChildren()) do
+					if t:IsA("Tool") then
+						local isGun = nameHas(t.Name, GUN_WORDS)
+						for _, d in ipairs(t:GetDescendants()) do
+							if (d:IsA("IntValue") or d:IsA("NumberValue")) and nameHas(d.Name, AMMO_WORDS) then ammoVals = ammoVals + 1; isGun = true end
+						end
+						if isGun then guns[t.Name] = true end
+					end
+				end
+			end
+		end
+		local gc = 0
+		for n in pairs(guns) do gc = gc + 1; if apply and Toggles.calApplyAmmo.Value then addToDropdown(Options.infAmmoGuns, n, true) end end
+		r[#r + 1] = ("Guns: %d detected, %d ammo-values"):format(gc, ammoVals)
+
+		-- 3) shields
+		local shields = {}
+		if char then
+			for _, d in ipairs(char:GetDescendants()) do
+				if d:IsA("BasePart") and nameHas(d.Name, SHIELD_WORDS) then shields[d.Name] = true end
+			end
+		end
+		local sc = 0
+		for n in pairs(shields) do sc = sc + 1; if apply and Toggles.calApplyShields.Value then addToDropdown(Options.shieldNames, n, true) end end
+		r[#r + 1] = ("Shields: %d detected"):format(sc)
+
+		-- 4) vehicles + teams (one workspace pass; pcall'd in case it's huge)
+		local vseats, seats = 0, 0
+		pcall(function()
+			for _, d in ipairs(Workspace:GetDescendants()) do
+				if d:IsA("VehicleSeat") then vseats = vseats + 1 elseif d:IsA("Seat") then seats = seats + 1 end
+			end
+		end)
+		r[#r + 1] = ("Vehicles: %d VehicleSeats, %d Seats"):format(vseats, seats)
+		local teams = 0
+		pcall(function() teams = #game:GetService("Teams"):GetChildren() end)
+		r[#r + 1] = ("Teams: %d"):format(teams)
+		-- RemoteEvent count: hints whether damage is remote-driven (-> Remote Replay).
+		local remotes = 0
+		pcall(function()
+			for _, d in ipairs(game:GetDescendants()) do if d:IsA("RemoteEvent") then remotes = remotes + 1; if remotes > 4000 then break end end end
+		end)
+		r[#r + 1] = ("RemoteEvents: %d"):format(remotes)
+
+		-- 5) melee damage mechanism (held tool / arm .Touched connection count)
+		local mech = "unknown (no getconnections)"
+		if getconnections then
+			local n, probe = 0, {}
+			local c = lPlayer.Character
+			if c then
+				local tool
+				for _, t in ipairs(c:GetChildren()) do if t:IsA("Tool") then tool = t break end end
+				if tool then
+					for _, d in ipairs(tool:GetDescendants()) do if d:IsA("BasePart") then probe[#probe + 1] = d end end
+				else
+					local rh = c:FindFirstChild("Right Arm") or c:FindFirstChild("RightHand")
+					if rh then probe[1] = rh end
+				end
+			end
+			for _, wp in ipairs(probe) do
+				local ok, conns = pcall(function() return getconnections(wp.Touched) end)
+				if ok and conns then n = n + #conns end
+			end
+			mech = n > 0 and ("touch-based (" .. n .. " conns) -> Silent Melee OK") or "no touch conns (remote/raycast?)"
+		end
+		r[#r + 1] = "Melee dmg: " .. mech
+
+		pcall(function() reportLabel:SetText(table.concat(r, "\n")) end)
+		return { parts = nonStd, guns = guns, shields = shields }
+	end
+
+	-- ---- save / load the extracted profile (per PlaceId) ----
+	local function keysOf(t) local o = {} for k in pairs(t) do o[#o + 1] = k end return o end
+	local function saveProfile(data)
+		if not writefile then Library:Notify("Executor has no writefile"); return end
+		pcall(function()
+			writefile(CAL_FILE, HttpService:JSONEncode({ parts = keysOf(data.parts), guns = keysOf(data.guns), shields = keysOf(data.shields) }))
+		end)
+		Library:Notify("Saved profile for PlaceId " .. tostring(game.PlaceId))
+	end
+	local function loadProfile(notify)
+		if not (isfile and readfile and isfile(CAL_FILE)) then if notify then Library:Notify("No saved profile for this game") end return end
+		local ok, d = pcall(function() return HttpService:JSONDecode(readfile(CAL_FILE)) end)
+		if not (ok and type(d) == "table") then if notify then Library:Notify("Saved profile unreadable") end return end
+		for _, n in ipairs(d.parts or {}) do addToDropdown(Options.extenderPartList, n, true) end
+		for _, n in ipairs(d.guns or {}) do addToDropdown(Options.infAmmoGuns, n, true) end
+		for _, n in ipairs(d.shields or {}) do addToDropdown(Options.shieldNames, n, true) end
+		if notify then Library:Notify("Loaded saved game profile") end
+	end
+
+	scanGroup:AddButton("Scan & Extract", function()
+		runScan(true); Library:Notify("Scan complete - see report")
+	end):AddToolTip("Fingerprint this game and auto-apply detected parts/guns/shields per the toggles above.")
+	scanGroup:AddButton("Scan Only (no apply)", function()
+		runScan(false); Library:Notify("Scan complete (report only)")
+	end):AddToolTip("Show what would be detected without changing any lists.")
+	scanGroup:AddButton("Save Profile", function()
+		saveProfile(runScan(false))
+	end):AddToolTip("Write the extracted profile to disk for this game (PlaceId).")
+	scanGroup:AddButton("Load Profile", function() loadProfile(true) end):AddToolTip("Re-apply the saved profile for this game.")
+
+	-- #6: shareable profile strings (export to clipboard / import a pasted string).
+	local function profileToStr(data)
+		local json = HttpService:JSONEncode({ parts = keysOf(data.parts), guns = keysOf(data.guns), shields = keysOf(data.shields) })
+		if crypt and crypt.base64encode then local ok, e = pcall(function() return crypt.base64encode(json) end); if ok and e then return e end end
+		return json
+	end
+	local function strToProfile(s)
+		if not s or s == "" then return nil end
+		local txt = s
+		if crypt and crypt.base64decode then local ok, dec = pcall(function() return crypt.base64decode(s) end); if ok and dec then txt = dec end end
+		local ok, d = pcall(function() return HttpService:JSONDecode(txt) end)
+		return (ok and type(d) == "table") and d or nil
+	end
+	local function applyProfile(d)
+		if not d then return false end
+		for _, n in ipairs(d.parts or {}) do addToDropdown(Options.extenderPartList, n, true) end
+		for _, n in ipairs(d.guns or {}) do addToDropdown(Options.infAmmoGuns, n, true) end
+		for _, n in ipairs(d.shields or {}) do addToDropdown(Options.shieldNames, n, true) end
+		return true
+	end
+	scanGroup:AddInput("calProfileStr", { Text = "Profile String", Default = "", Tooltip = "Paste a shared profile string here, then Import." })
+	scanGroup:AddButton("Export Profile -> Clipboard", function()
+		local s = profileToStr(runScan(false))
+		pcall(function() if setclipboard then setclipboard(s) end end)
+		pcall(function() Options.calProfileStr:SetValue(s) end)
+		Library:Notify("Profile copied to clipboard")
+	end):AddToolTip("Encode this game's detected profile to a shareable string (also copied to clipboard).")
+	scanGroup:AddButton("Import Profile (from string)", function()
+		if applyProfile(strToProfile(Options.calProfileStr.Value)) then Library:Notify("Imported profile") else Library:Notify("Invalid profile string") end
+	end):AddToolTip("Apply a profile from the pasted string above.")
+
+	-- Auto-load a previously-saved profile for this place on startup.
+	pcall(function() loadProfile(false) end)
+	print("[Calibrate] F10 extract/calibrate registered")
+end)
+
+-- ===== [V13] Remote Replay (experimental, hook-free) =======================
+-- For RemoteEvent-damage games where Silent Melee can't help. We CANNOT capture
+-- outgoing FireServer calls (that needs a namecall hook, which rule #3 forbids), so
+-- this is a MANUAL replay: discover the game's RemoteEvents, you pick the damage one
+-- + which argument to send, and it fires that remote at the nearest target. Firing a
+-- remote yourself is a normal call, not a hook. Best-effort / game-specific.
+pcall(function()
+	local miscTab = Bridge.MiscTab
+	if not miscTab then return end
+	local rr = miscTab:AddRightGroupbox("Remote Replay (experimental)")
+	rr:AddLabel("RemoteEvent-damage games only. Refresh, pick the\ndamage remote + an arg, then fire it at the nearest target.", true)
+	local remotes = {}
+	rr:AddDropdown("rrRemote", { Text = "Remote", Values = {}, Multi = false, AllowNull = true, Tooltip = "Discovered RemoteEvents (Refresh to populate)." })
+	rr:AddDropdown("rrArg", { Text = "Argument", Values = { "Target Character", "Target Player", "Target HumanoidRootPart", "Target Position", "None" }, Default = "Target Character", Multi = false, AllowNull = false, Tooltip = "What to pass to FireServer. Match the game's damage remote signature." })
+	rr:AddSlider("rrRange", { Text = "Range (studs)", Min = 5, Max = 120, Default = 25, Rounding = 0 })
+	rr:AddToggle("rrIgnoreTeam", { Text = "Ignore Team", Default = true })
+
+	local function refreshRemotes()
+		remotes = {}
+		local names, count = {}, 0
+		pcall(function()
+			for _, d in ipairs(game:GetDescendants()) do
+				if d:IsA("RemoteEvent") then
+					count = count + 1; if count > 4000 then break end
+					local key, i = d.Name, 2
+					while remotes[key] do key = d.Name .. " #" .. i; i = i + 1 end
+					remotes[key] = d; names[#names + 1] = key
+				end
+			end
+		end)
+		table.sort(names)
+		Options.rrRemote.Values = names; pcall(function() Options.rrRemote:SetValues() end)
+		Library:Notify("Found " .. #names .. " RemoteEvents")
+	end
+	rr:AddButton("Refresh Remotes", refreshRemotes):AddToolTip("Scan the game for RemoteEvents.")
+
+	local function nearestTarget()
+		local lc = lPlayer.Character
+		local lroot = lc and (lc:FindFirstChild("HumanoidRootPart") or lc:FindFirstChild("Head"))
+		if not lroot then return nil end
+		local best, bd = nil, Options.rrRange.Value
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if plr ~= lPlayer then
+				local teammate = Toggles.rrIgnoreTeam.Value and plr.Team and lPlayer.Team and plr.Team == lPlayer.Team
+				local c = plr.Character
+				local node = c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Head"))
+				local hum = c and c:FindFirstChildWhichIsA("Humanoid")
+				if not teammate and node and hum and hum.Health > 0 then
+					local dd = (node.Position - lroot.Position).Magnitude
+					if dd < bd then bd, best = dd, plr end
+				end
+			end
+		end
+		return best
+	end
+	local function fireAt(plr)
+		local remote = remotes[Options.rrRemote.Value or ""]
+		if not remote then Library:Notify("Pick a remote first"); return end
+		local c, mode = plr.Character, Options.rrArg.Value
+		local arg
+		if mode == "Target Player" then arg = plr
+		elseif mode == "Target Character" then arg = c
+		elseif mode == "Target HumanoidRootPart" then arg = c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Head"))
+		elseif mode == "Target Position" then local n = c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Head")); arg = n and n.Position end
+		pcall(function() if mode == "None" then remote:FireServer() else remote:FireServer(arg) end end)
+	end
+	rr:AddButton("Fire at Nearest", function()
+		local t = nearestTarget()
+		if t then fireAt(t) else Library:Notify("No target in range") end
+	end):AddToolTip("Fire the selected remote once at the nearest valid target.")
+	rr:AddToggle("rrAuto", { Text = "Auto-Fire (aura)", Default = false, Tooltip = "Repeatedly fire the remote at the nearest target. (Default: OFF)" })
+	rr:AddSlider("rrRate", { Text = "Auto Rate (/s)", Min = 1, Max = 20, Default = 5, Rounding = 0 })
+	local rrLast = 0
+	local rrConn = RunService.Heartbeat:Connect(function()
+		if not (Toggles.rrAuto and Toggles.rrAuto.Value) then return end
+		local now = tick(); if now - rrLast < (1 / math.max(1, Options.rrRate.Value)) then return end
+		rrLast = now
+		local t = nearestTarget(); if t then fireAt(t) end
+	end)
+	Bridge:RegisterAddon("RemoteReplay", { onUnload = function() if rrConn then pcall(function() rrConn:Disconnect() end) end end })
+	print("[Remote] replay tool registered")
 end)
 
 pcall(finalInit)
