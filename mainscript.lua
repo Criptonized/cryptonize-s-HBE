@@ -3063,6 +3063,11 @@ function addPlayer(player)
 				task.wait()
 			until humanoid or tick()-startTime >= 2
 		end
+		-- If no Humanoid ever appeared within the wait (custom rig without one, or a
+		-- slow/aborted spawn) bail cleanly -- the loop below indexes `humanoid`, and a
+		-- nil index here used to throw inside the (un-pcall'd) CharacterAdded handler.
+		-- The Heartbeat update loop still self-heals the character via Update().
+		if not humanoid then return false end
 		local loaded = false
 		startTime = tick()
 		repeat
@@ -3288,7 +3293,10 @@ Teams.ChildRemoved:Connect(function(team)
 	end
 end)
 
-lPlayer:GetAttributeChangedSignal("Team"):Connect(function()
+-- Team is a Player PROPERTY, not an attribute. GetAttributeChangedSignal("Team")
+-- never fired, so your own team switches didn't refresh HBE/ESP (every other Team
+-- listener in this script correctly uses GetPropertyChangedSignal).
+lPlayer:GetPropertyChangedSignal("Team"):Connect(function()
 	pcall(updatePlayers)
 end)
 
@@ -5996,14 +6004,17 @@ pcall(function()
 	if Bridge.PluginBase ~= "" then pcall(function() Options.pluginBaseUrl:SetValue(Bridge.PluginBase) end) end
 
 	-- External plugins (uploaded to the base URL). No inline source -> small core.
-	Bridge:RegisterPluginSource("Aimbot",   { tab = "Aimbot",   file = "aimbot.lua",   desc = "Camera aimbot + triggerbot + no-recoil with ballistic prediction." })
-	Bridge:RegisterPluginSource("Spectate", { tab = "Spectate", file = "spectate.lua", desc = "Cycle the camera through players to spectate." })
-	Bridge:RegisterPluginSource("Advanced", { tab = "Advanced", file = "advanced.lua", desc = "Radar/minimap, bunny-hop + infinite jump, teleport persistence, auto-soften." })
-	Bridge:RegisterPluginSource("Precision", { tab = "Precision", file = "precision.lua", desc = "Single-target hitbox extender with resolver, dynamic scaling + visuals." })
-	Bridge:RegisterPluginSource("Streamer", { tab = "Streamer", file = "streamer.lua", desc = "Hide visuals, panic key, UI hide, update-rate jitter." })
-	Bridge:RegisterPluginSource("Teleport", { tab = "Teleport", file = "teleport.lua", desc = "Waypoints, teleport-to-player, seat teleport, anti-rubberband." })
-	Bridge:RegisterPluginSource("Remote",   { tab = "Remote",   file = "remotereplay.lua", desc = "Manual RemoteEvent replay at the nearest target (for remote-damage games)." })
-	Bridge:RegisterPluginSource("InfAmmo",  { tab = "Inf Ammo", file = "infammo.lua", desc = "Adaptive inf-ammo (5 strategies + learning) with gun picker." })
+	-- Each plugin carries its explicit raw GitHub URL so Enable works even if the
+	-- Plugin Base URL field is blank. (Loader still honors `info.url` first.)
+	local RAW = "https://raw.githubusercontent.com/Criptonized/cryptonize-s-HBE/main/"
+	Bridge:RegisterPluginSource("Aimbot",   { tab = "Aimbot",   file = "aimbot.lua",      url = RAW .. "aimbot.lua",      desc = "Camera aimbot + triggerbot + no-recoil with ballistic prediction." })
+	Bridge:RegisterPluginSource("Spectate", { tab = "Spectate", file = "spectate.lua",    url = RAW .. "spectate.lua",    desc = "Cycle the camera through players to spectate." })
+	Bridge:RegisterPluginSource("Advanced", { tab = "Advanced", file = "advanced.lua",    url = RAW .. "advanced.lua",    desc = "Radar/minimap, bunny-hop + infinite jump, teleport persistence, auto-soften." })
+	Bridge:RegisterPluginSource("Precision", { tab = "Precision", file = "precision.lua", url = RAW .. "precision.lua",   desc = "Single-target hitbox extender with resolver, dynamic scaling + visuals." })
+	Bridge:RegisterPluginSource("Streamer", { tab = "Streamer", file = "streamer.lua",    url = RAW .. "streamer.lua",    desc = "Hide visuals, panic key, UI hide, update-rate jitter." })
+	Bridge:RegisterPluginSource("Teleport", { tab = "Teleport", file = "teleport.lua",    url = RAW .. "teleport.lua",    desc = "Waypoints, teleport-to-player, seat teleport, anti-rubberband." })
+	Bridge:RegisterPluginSource("Remote",   { tab = "Remote",   file = "remotereplay.lua", url = RAW .. "remotereplay.lua", desc = "Manual RemoteEvent replay at the nearest target (for remote-damage games)." })
+	Bridge:RegisterPluginSource("InfAmmo",  { tab = "Inf Ammo", file = "infammo.lua",     url = RAW .. "infammo.lua",     desc = "Adaptive inf-ammo (5 strategies + learning) with gun picker." })
 
 	-- One manager row (status + Enable + Unload) per registered plugin.
 	local function addRow(name)
