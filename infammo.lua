@@ -65,11 +65,14 @@ return {
 	local fieldCache = setmetatable({}, { __mode = "k" })  -- [tool] = { fields=, how= }
 	local snapshots  = setmetatable({}, { __mode = "k" })  -- [tool] = { [valueObj] = lastValue }
 
+	-- `alive` lets the resolver detect when a cached value object was replaced (e.g. TREK
+	-- re-creates the gun's LocalTAmmo folder on respawn) so it re-detects instead of
+	-- writing to a dead, reparented object forever -- the "doesn't work after reset" bug.
 	local function fieldFromValue(v)
-		return { read = function() return v.Value end, write = function(n) pcall(function() v.Value = n end) end }
+		return { read = function() return v.Value end, write = function(n) pcall(function() v.Value = n end) end, alive = function() return v.Parent ~= nil end }
 	end
 	local function fieldFromAttr(inst, name)
-		return { read = function() return inst:GetAttribute(name) or 0 end, write = function(n) pcall(function() inst:SetAttribute(name, n) end) end }
+		return { read = function() return inst:GetAttribute(name) or 0 end, write = function(n) pcall(function() inst:SetAttribute(name, n) end) end, alive = function() return inst.Parent ~= nil end }
 	end
 
 	local function stratValueNames(tool)
@@ -152,7 +155,13 @@ return {
 
 	local function resolveFields(tool)
 		local cached = fieldCache[tool]
-		if cached and #cached.fields > 0 then return cached end
+		if cached and #cached.fields > 0 then
+			-- Re-detect if any cached value object was reparented/replaced (respawn/reload).
+			local good = true
+			for _, f in ipairs(cached.fields) do if f.alive and not f.alive() then good = false; break end end
+			if good then return cached end
+			fieldCache[tool] = nil
+		end
 		for _, s in ipairs(STRATS) do
 			local fields = s.fn(tool)
 			if #fields > 0 then fieldCache[tool] = { fields = fields, how = s.name }; return fieldCache[tool] end
