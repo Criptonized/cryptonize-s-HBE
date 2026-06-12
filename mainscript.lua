@@ -166,14 +166,28 @@ function DrawingFallback:Remove()
 	end
 end
 
+-- Reject NaN/inf so a bad projection never sizes/positions a fallback element. A garbage
+-- coordinate used to stretch a Frame into the giant black bar that smeared across the top
+-- of the screen (and clustered ESP boxes into floating squares).
+local function dfFinite(n) return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge end
+local DF_MAX = 8192  -- hard cap on any fallback element dimension/offset (px)
+local function dfClamp(n) if not dfFinite(n) then return 0 end return math.clamp(n, -DF_MAX, DF_MAX) end
+
 function DrawingFallback:Update()
 	if not self.element then return end
-	
+
 	self.element.Visible = self.visible
-	
+	-- Bail (hidden) on any non-finite geometry rather than rendering a corrupt element.
+	local p = self.position
+	if typeof(p) == "Vector2" and not (dfFinite(p.X) and dfFinite(p.Y)) then self.element.Visible = false; return end
+	if self.type == "Line" then
+		local a, b = self.from, self.to
+		if not (typeof(a) == "Vector2" and typeof(b) == "Vector2" and dfFinite(a.X) and dfFinite(a.Y) and dfFinite(b.X) and dfFinite(b.Y)) then self.element.Visible = false; return end
+	end
+
 	if self.type == "Circle" then
-		self.element.Size = UDim2.new(0, self.radius * 2, 0, self.radius * 2)
-		self.element.Position = UDim2.new(0, self.position.X - self.radius, 0, self.position.Y - self.radius)
+		self.element.Size = UDim2.new(0, dfClamp(self.radius * 2), 0, dfClamp(self.radius * 2))
+		self.element.Position = UDim2.new(0, dfClamp(self.position.X - self.radius), 0, dfClamp(self.position.Y - self.radius))
 		self.border.Color = self.color
 		self.border.Thickness = self.thickness
 		self.element.BackgroundTransparency = self.filled and 0 or 1
@@ -183,7 +197,7 @@ function DrawingFallback:Update()
 	elseif self.type == "Text" then
 		self.element.Text = self.text
 		self.element.TextColor3 = self.color
-		self.element.Position = UDim2.new(0, self.position.X, 0, self.position.Y)
+		self.element.Position = UDim2.new(0, dfClamp(self.position.X), 0, dfClamp(self.position.Y))
 		-- For Text, .size is a NUMBER (font size), not Vector2
 		local fontSize = self.size
 		if type(fontSize) == "number" then
@@ -204,8 +218,8 @@ function DrawingFallback:Update()
 			self.border.Color = self.outlineColor
 		end
 	elseif self.type == "Square" then
-		self.element.Size = UDim2.new(0, self.size.X, 0, self.size.Y)
-		self.element.Position = UDim2.new(0, self.position.X, 0, self.position.Y)
+		self.element.Size = UDim2.new(0, dfClamp(self.size.X), 0, dfClamp(self.size.Y))
+		self.element.Position = UDim2.new(0, dfClamp(self.position.X), 0, dfClamp(self.position.Y))
 		self.element.BackgroundColor3 = self.color
 		self.element.BackgroundTransparency = self.filled and 0 or 1
 		-- A hollow Square (Filled=false) is meant to read as an outline, but an empty
@@ -234,8 +248,8 @@ function DrawingFallback:Update()
 			local angle = math.atan2(dy, dx)
 			local cx = (p1.X + p2.X) / 2
 			local cy = (p1.Y + p2.Y) / 2
-			self.element.Size = UDim2.new(0, length, 0, math.max(1, self.thickness or 1))
-			self.element.Position = UDim2.new(0, cx, 0, cy)
+			self.element.Size = UDim2.new(0, dfClamp(length), 0, math.max(1, self.thickness or 1))
+			self.element.Position = UDim2.new(0, dfClamp(cx), 0, dfClamp(cy))
 			self.element.AnchorPoint = Vector2.new(0.5, 0.5)
 			self.element.Rotation = math.deg(angle)
 		end
@@ -1125,7 +1139,7 @@ Toggles.espHighlightToggled:OnChanged(updatePlayers)
 Options.espHighlightColor1:OnChanged(updatePlayers)
 Options.espHighlightColor2:OnChanged(updatePlayers)
 espChamsGroupbox:AddToggle("espHighlightUseTeamColor", { Text = "Use Team Color", Default = false, Tooltip = "Use team color for chams. (Default: OFF)" }):OnChanged(updatePlayers)
-espChamsGroupbox:AddDropdown("espHighlightDepthMode", { Text = "Depth Mode", AllowNull = false, Multi = false, Values = { "Occluded", "AlwaysOnTop" }, Default = "Occluded", Tooltip = "How chams render through walls. (Default: Occluded)" }):OnChanged(updatePlayers)
+espChamsGroupbox:AddDropdown("espHighlightDepthMode", { Text = "Depth Mode", AllowNull = false, Multi = false, Values = { "AlwaysOnTop", "Occluded" }, Default = "AlwaysOnTop", Tooltip = "How chams render through walls.\nAlwaysOnTop = wallhack, visible through mountains/objects.\nOccluded = only visible in direct line of sight.\n(Default: AlwaysOnTop)" }):OnChanged(updatePlayers)
 espChamsGroupbox:AddSlider("espHighlightFillTransparency", { Text = "Fill Transparency", Min = 0, Max = 1, Default = 0.5, Rounding = 2, Tooltip = "Transparency of chams fill. (Default: 0.5)" }):OnChanged(updatePlayers)
 espChamsGroupbox:AddSlider("espHighlightOutlineTransparency", { Text = "Outline Transparency", Min = 0, Max = 1, Default = 0, Rounding = 2, Tooltip = "Transparency of chams outline. (Default: 0)" }):OnChanged(updatePlayers)
 espChamsGroupbox:AddToggle("espChamsGlow", { Text = "Glow Pulse", Default = false, Tooltip = "Animate the chams outline so it pulses/glows. (Default: OFF)" })
@@ -2979,6 +2993,7 @@ function addPlayer(player)
 			else
 				-- Player exists but is off-screen
 				nameEsp.Visible = false
+				teamEsp.Visible = false
 				healthBar.Visible = false
 				boxEsp.Visible = false
 				tracer.Visible = false
@@ -3003,12 +3018,19 @@ function addPlayer(player)
 				end
 			end
 		else
+			-- No torso target (respawning) or Streamer hideESP: hide EVERY 2D element,
+			-- otherwise the last-drawn name/team/health/box/marker/skeleton stays frozen
+			-- on screen as a stale floating artifact (the leftover squares/bars).
 			nameEsp.Visible = false
+			teamEsp.Visible = false
 			healthBar.Visible = false
+			healthText.Visible = false
 			boxEsp.Visible = false
 			tracer.Visible = false
+			offscreenMarker.Visible = false
+			hideSkeleton()
 		end
-		
+
 		-- Chams (independently suppressed by Streamer Mode's hideChams flag)
 		if Toggles.espHighlightToggled.Value and not Bridge.Streamer.hideChams then
 			chams.Adornee = playerChar
@@ -4099,7 +4121,7 @@ pcall(function()
 	vmGroup:AddToggle("vehStability",       { Text = "Stability Assist", Default = false, Tooltip = "Keep the vehicle upright (anti-rollover) via AlignOrientation. (Default: OFF)" })
 	vmGroup:AddSlider("vehStabilityStrength", { Text = "Stability Strength", Min = 0, Max = 1, Default = 0.65, Rounding = 2, Tooltip = "How aggressively stability holds you upright. (Default: 0.65)" })
 	vmGroup:AddToggle("vehKeepOwnership", { Text = "Keep Ownership (sim radius)", Default = false, Tooltip = "Raise your simulation radius (setsimulationradius) so you keep\nnetwork ownership of the vehicle -- makes the tuning writes far\nmore likely to stick. May be detectable; off by default. (Default: OFF)" })
-	local vmInfo = vmGroup:AddLabel("Detected: pick a vehicle, then Detect")
+	local vmInfo = vmGroup:AddLabel("Detected: sit in a vehicle, or hold-pick one", true)
 	-- Live confidence readout: are your writes even going to stick? Shows whether
 	-- YOU own the vehicle's network (writes replicate) vs the server, and whether a
 	-- written value actually held (server didn't revert it).
@@ -4128,7 +4150,20 @@ pcall(function()
 	local function fieldVal(v)  return { read = function() return v.Value end, write = function(n) pcall(function() v.Value = n end) end } end
 	local function fieldAttr(i, a) return { read = function() return i:GetAttribute(a) end, write = function(n) pcall(function() i:SetAttribute(a, n) end) end } end
 		local function fieldTbl(t, k) return { read = function() return t[k] end, write = function(n) pcall(function() t[k] = n end) end } end
-	local function pickedModel() return pickedPart and (pickedPart:FindFirstAncestorWhichIsA("Model") or pickedPart) or nil end
+	-- If nothing was hold-picked, fall back to the vehicle you're SITTING in -- so tuning
+	-- works the moment you're in a car without a manual pick (the old flow left "Detected:
+	-- pick a vehicle" / "Owner: -" and the sliders had nothing to write to).
+	local function seatedVehicleModel()
+		local char = lPlayer.Character
+		local hum = char and char:FindFirstChildWhichIsA("Humanoid")
+		local seat = hum and hum.SeatPart
+		if seat and seat.Parent then return seat:FindFirstAncestorWhichIsA("Model") or seat end
+		return nil
+	end
+	local function pickedModel()
+		if pickedPart then return pickedPart:FindFirstAncestorWhichIsA("Model") or pickedPart end
+		return seatedVehicleModel()
+	end
 	local function vmPrimary()
 		local m = pickedModel(); if not m then return nil end
 		return m.PrimaryPart or (pickedPart and pickedPart:IsA("BasePart") and pickedPart) or m:FindFirstChildWhichIsA("BasePart")
@@ -4140,7 +4175,7 @@ pcall(function()
 		vmB = { gas = {}, health = {}, speed = {}, torque = {}, turn = {}, steer = {}, turnaccel = {} }
 		vmSeats, vmMaxSeen, vmIsAChassis = {}, {}, false
 		local m = pickedModel()
-		if not m then pcall(function() vmInfo:SetText("Detected: no vehicle picked") end); return end
+		if not m then pcall(function() vmInfo:SetText("Detected: none -- sit in a vehicle or hold-pick one") end); return end
 		for _, d in ipairs(m:GetDescendants()) do
 			if d:IsA("NumberValue") or d:IsA("IntValue") then
 				local b = classifyVal(d.Name); if b then table.insert(vmB[b], fieldVal(d)) end
@@ -4519,6 +4554,8 @@ pcall(function()
 		"Advanced frontier (safe set): a camera Aimbot ballistic resolver (lead by velocity x bullet-travel-time + gravity-drop comp), a team-coloured Radar/minimap rotated to your view, a Movement tab (bunny-hop + infinite jump), teleport Persistence (queue_on_teleport re-inject from a loader URL), and an Auto-Soften director that dials aggressive settings into safe ranges when Phantom Recon detects an anti-cheat. The break-prone/hook frontiers (function hooks, fakelag, actor offload, decompiler, WebSocket C2) were researched and drafted separately, NOT integrated, to keep this build stable.",
 		"Plugin system v1 (compartmentalization). The Bridge gained EnablePlugin/UnloadPlugin + a tracked plugin context (ctx) that auto-disconnects connections, destroys instances/groupboxes and clears control keys on unload, so plugins are true plug-and-play: enable runs a real loadstring and builds the tab on demand, unload frees its memory/connections and drops refs so the code GCs. A Plugins tab manages it, and the first plugin -- Spectate (cycle the camera through players) -- ships as an on-demand module proving the cycle. Existing tabs are untouched and will migrate into plugins one at a time.",
 		"Plugin externalization: the loader now fetches plugins from a Plugin Base URL (your GitHub raw folder, set in the Plugins tab or getgenv().FurryHBE_PluginBase) as <base>/<file>.lua. The Gun Combat block (aimbot/triggerbot/no-recoil), Spectate and the Advanced tab (radar/movement/persistence/auto-soften) were moved OUT into their own files (aimbot.lua, spectate.lua, advanced.lua, precision.lua) and removed from the core (~835 fewer lines). Core helpers getSafeGuiParent + relationshipColor are exposed on the Bridge so external plugins can reuse them.",
+		"Calibrate + Combat fix pass. Chams now default to AlwaysOnTop (see-through-walls wallhack) instead of Occluded. The Weapon Reader reads brand-named guns ('Weston Ranger') by inspecting their internals (Trigger/Barrel/Mag/Sight parts + ammo values) and now shows current/reserve ammo with a HUD-text fallback ('28 | 271'). Auto-Add Character Parts no longer dumps cosmetics/gear/weapon parts into the hitbox list (filtered), tracks exactly what it added, and adds Undo-Auto-Added + Reset-Body-Parts buttons. The scan also detects brand-named guns for Inf-Ammo. Tier-3 Learn now also snapshots HUD number labels so it catches ammo that lives only on-screen. Long scan / Phantom reports are capped on-screen (no more overlap) with Copy/Save-to-file buttons; profiles, the DB and saved reports now all live in a workspace/FurryHBE/ folder and report their exact path. The Plugins tab shows a loaded/total summary and warns on startup that plugins are off.",
+		"Stability + glitch sweep. Fixed stale ESP artifacts: a player with no torso (respawning) or with Streamer hideESP on now hides EVERY 2D element (name/team/health/box/tracer/off-screen marker/skeleton) -- before, several were left frozen on screen as floating squares/bars. The GUI-fallback renderer now rejects NaN/infinite coordinates and clamps every element's size/offset, so a bad projection can't smear a giant black bar across the top of the screen. Inf-Ammo's player-side scan is scoped to Backpack/leaderstats/Character ONLY (never PlayerGui/PlayerScripts) so it can't scribble the refill amount into the menu's own GUI state and corrupt the tabs. Vehicle Tuning now auto-detects the vehicle you're SITTING in (no manual pick needed) so the speed/handling writes have a target. Added Instant Interact on the Calibrate tab: sets every ProximityPrompt's HoldDuration to 0 (hold-to-interact becomes a tap), with restore-on-off and a live prompt count. Spectate reads the camera live so it survives a respawn. All core + 8 plugins Luau-compiler validated.",
 	}
 	local function verNum(i) return 1 + 0.5 * (i - 1) end
 	local function fmtV(n) return "V" .. (n == math.floor(n) and tostring(math.floor(n)) or tostring(n)) end
@@ -4703,6 +4740,7 @@ pcall(function()
 		"weaponReaderAuto","groupRadius",
 		"silentMeleeEnabled","silentMeleeMode","silentMeleeRange","silentMeleeFOV","silentMeleeOnlyMelee","silentMeleeAura","silentMeleeAuraRate","silentMeleeIgnoreTeam","silentMeleeIgnoreWL","silentMeleeCrosshair","silentMeleeWallPen","silentMeleeShieldBypass","shieldNames",
 		"calApplyParts","calApplyAmmo","calApplyShields","deepScanEnabled","profileSourceUrl","pluginBaseUrl",
+		"instantInteract","interactDistance",
 		"aimbotEnabled","aimbotTrigger","aimbotPart","aimbotFOV","aimbotSmooth","aimbotVisibleOnly","aimbotIgnoreTeam","aimbotIgnoreWL","aimbotShowFOV",
 		"triggerEnabled","triggerActivate","triggerDelay","triggerIgnoreTeam","norecoilEnabled",
 		"aimbotPredict","aimbotBulletSpeed","aimbotDropComp",
@@ -4758,6 +4796,7 @@ pcall(function()
 			"dragSelectMode", "silentMeleeEnabled", "silentMeleeAura",
 			"vmInfGas", "vmFullHealth", "vmSetSpeed", "vehBoost", "vehStability", "rrAuto",
 			"aimbotEnabled", "triggerEnabled", "norecoilEnabled", "bhopEnabled", "infJumpEnabled",
+			"instantInteract",
 		}) do
 			pcall(function() if Toggles[k] then Toggles[k]:SetValue(false) end end)
 		end
@@ -4840,7 +4879,37 @@ pcall(function()
 
 	Bridge.Weapon = Bridge.Weapon or { name = nil, type = nil, tool = nil }
 
-	-- Heuristic weapon-type classifier from the tool/model name.
+	-- Word lists for reading a weapon's internals (when its NAME doesn't reveal type).
+	local WR_AMMO_WORDS = { "ammo", "mag", "clip", "round", "reserve", "bullet", "shell" }
+	local WR_GUN_PARTS  = { "trigger", "barrel", "muzzle", "magazine", "mag release", "magrelease", "chamber",
+		"bolt", "slide", "ironsight", "iron sight", "sight", "scope", "stock", "grip", "handguard",
+		"flashhider", "flash hider", "suppressor", "silencer", "receiver", "firerate", "fire rate", "recoil" }
+	-- Does any descendant's name contain one of `words`?
+	local function descHas(tool, words)
+		local hit = false
+		pcall(function()
+			for _, d in ipairs(tool:GetDescendants()) do
+				local ln = d.Name:lower()
+				for _, w in ipairs(words) do if ln:find(w, 1, true) then hit = true; return end end
+			end
+		end)
+		return hit
+	end
+	-- Does any descendant carry a numeric Value whose name reads like ammo?
+	local function hasAmmoValue(tool)
+		local hit = false
+		pcall(function()
+			for _, d in ipairs(tool:GetDescendants()) do
+				if d:IsA("IntValue") or d:IsA("NumberValue") then
+					local ln = d.Name:lower()
+					for _, w in ipairs(WR_AMMO_WORDS) do if ln:find(w, 1, true) then hit = true; return end end
+				end
+			end
+		end)
+		return hit
+	end
+
+	-- Heuristic weapon-type classifier: tool/model name first, then its internals.
 	local function classify(tool)
 		local n = tool.Name:lower()
 		local function has(...) for _, w in ipairs({ ... }) do if n:find(w) then return true end end return false end
@@ -4848,7 +4917,11 @@ pcall(function()
 		if has("fist", "glove", "punch", "knuckle") then return "Melee (fist)" end
 		if has("bat", "hammer", "club", "mace", "staff", "spear", "pole", "pipe", "wrench") then return "Melee (blunt)" end
 		if has("bow", "crossbow") then return "Ranged (bow)" end
-		if has("gun", "rifle", "pistol", "smg", "shotgun", "sniper", "ak", "glock", "launcher", "uzi", "deagle") then return "Ranged (gun)" end
+		if has("gun", "rifle", "pistol", "smg", "shotgun", "sniper", "ak", "glock", "launcher", "uzi", "deagle", "carbine", "revolver", "rocket", "minigun") then return "Ranged (gun)" end
+		-- Name was just a brand ("Weston Ranger") -- inspect internals. Gun frameworks
+		-- (FE Gun Kit, BRM5-style) build the tool from Trigger/Barrel/Mag/Sight parts and
+		-- carry Ammo IntValues, so those reveal it's a gun even with no keyword in the name.
+		if hasAmmoValue(tool) or descHas(tool, WR_GUN_PARTS) then return "Ranged (gun)" end
 		if tool:FindFirstChild("Handle") then return "Tool (unknown)" end
 		return "Unknown"
 	end
@@ -4880,19 +4953,70 @@ pcall(function()
 		end)
 		return found
 	end
+	-- Read current-mag vs reserve ammo from the tool's values/attributes, splitting by
+	-- name (reserve/spare/stored/max = pool; ammo/mag/clip = current). Reserve checked
+	-- first so "MaxAmmo"/"ReserveAmmo" don't get mis-bucketed as the current mag.
+	local AMMO_RES_WORDS = { "reserve", "spare", "stored", "maxammo", "max ammo", "totalammo", "total ammo", "backup", "pool", "extra" }
+	local AMMO_CUR_WORDS = { "ammo", "mag", "clip", "round", "loaded", "inclip", "current", "bullets" }
+	local function bucketAmmo(ln, val, cur, reserve)
+		for _, w in ipairs(AMMO_RES_WORDS) do if ln:find(w, 1, true) then return cur, val end end
+		for _, w in ipairs(AMMO_CUR_WORDS) do if ln:find(w, 1, true) then return (cur == nil and val or cur), reserve end end
+		return cur, reserve
+	end
+	local function readAmmo(tool)
+		local cur, reserve
+		pcall(function()
+			for _, d in ipairs(tool:GetDescendants()) do
+				if d:IsA("IntValue") or d:IsA("NumberValue") then cur, reserve = bucketAmmo(d.Name:lower(), d.Value, cur, reserve) end
+			end
+		end)
+		pcall(function()
+			for _, d in ipairs(tool:GetDescendants()) do
+				for an, av in pairs(d:GetAttributes()) do
+					if type(av) == "number" then cur, reserve = bucketAmmo(an:lower(), av, cur, reserve) end
+				end
+			end
+		end)
+		return cur, reserve
+	end
+	-- HUD fallback: BRM5-style games only show ammo as on-screen text ("28 | 271").
+	-- Parse the first "<num> | <num>" or "<num> / <num>" we find in the PlayerGui.
+	local function readAmmoHUD()
+		local pg = lPlayer:FindFirstChildOfClass("PlayerGui")
+		if not pg then return nil end
+		local res
+		pcall(function()
+			local n = 0
+			for _, d in ipairs(pg:GetDescendants()) do
+				n = n + 1; if n > 9000 then break end
+				if (d:IsA("TextLabel") or d:IsA("TextButton")) and d.Visible then
+					local a, b = tostring(d.Text):match("(%d+)%s*[|/]%s*(%d+)")
+					if a and b then res = { tonumber(a), tonumber(b) }; return end
+				end
+			end
+		end)
+		return res
+	end
+
 	local function readNow()
 		local t = currentTool()
 		if t then
 			Bridge.Weapon.tool, Bridge.Weapon.name, Bridge.Weapon.type = t, t.Name, classify(t)
 			Bridge.Weapon.damage = findStat(t, { "damage", "dmg" })
 			Bridge.Weapon.range = findStat(t, { "range", "reach", "distance" })
+			local cur, reserve = readAmmo(t)
+			local hudUsed = false
+			if cur == nil then local hud = readAmmoHUD(); if hud then cur, reserve, hudUsed = hud[1], hud[2], true end end
+			Bridge.Weapon.ammo, Bridge.Weapon.reserve = cur, reserve
 			heldLabel:SetText("Held: " .. t.Name)
 			local extra = ""
+			if cur ~= nil then extra = extra .. "  ammo:" .. tostring(cur) .. (reserve ~= nil and ("/" .. tostring(reserve)) or "") .. (hudUsed and " (HUD)" or "") end
 			if Bridge.Weapon.damage then extra = extra .. "  dmg:" .. tostring(Bridge.Weapon.damage) end
 			if Bridge.Weapon.range then extra = extra .. "  rng:" .. tostring(Bridge.Weapon.range) end
 			typeLabel:SetText("Type: " .. Bridge.Weapon.type .. extra)
 		else
 			Bridge.Weapon.tool, Bridge.Weapon.name, Bridge.Weapon.type = nil, nil, nil
+			Bridge.Weapon.ammo, Bridge.Weapon.reserve = nil, nil
 			heldLabel:SetText("Held: none")
 			typeLabel:SetText("Type: -")
 		end
@@ -5467,14 +5591,52 @@ pcall(function()
 	local calTab      = mainWindow:AddTab("Calibrate")
 	local scanGroup   = calTab:AddLeftGroupbox("Game Profile / Extract")
 	local reportGroup = calTab:AddRightGroupbox("Last Scan Report")
-	local CAL_FILE    = "FurryHBE_Calibrate_" .. tostring(game.PlaceId) .. ".json"
+
+	-- All calibrate output (profiles, the DB, saved reports) goes in ONE folder in the
+	-- executor's workspace so it's easy to find/back up, instead of loose files dumped at
+	-- the root where you can't tell where they went. The path is reported on every save.
+	local OUT_DIR = "FurryHBE"
+	pcall(function() if makefolder and not (isfolder and isfolder(OUT_DIR)) then makefolder(OUT_DIR) end end)
+	local function outPath(name) return OUT_DIR .. "/" .. name end
+	local function saveText(name, text)
+		if not writefile then Library:Notify("Executor has no writefile"); return nil end
+		local p = outPath(name)
+		local ok = pcall(function() writefile(p, text) end)
+		Library:Notify(ok and ("Saved -> workspace/" .. p) or ("Save failed: " .. p))
+		return ok and p or nil
+	end
+	-- Trim a list of lines to a compact, non-overflowing on-screen block (long single
+	-- lines wrap and overlapped the next groupbox -- this caps both count and width).
+	local function capText(lines, maxLines, maxLen)
+		local shown = {}
+		for i = 1, math.min(#lines, maxLines) do
+			local ln = lines[i]
+			if #ln > maxLen then ln = ln:sub(1, maxLen - 3) .. "..." end
+			shown[i] = ln
+		end
+		if #lines > maxLines then shown[#shown + 1] = ("(+%d more lines -- use Save/Copy Report)"):format(#lines - maxLines) end
+		return table.concat(shown, "\n")
+	end
+	local CAL_FILE    = outPath("Calibrate_" .. tostring(game.PlaceId) .. ".json")
 
 	scanGroup:AddLabel("Place: " .. tostring(game.PlaceId), true)
+	scanGroup:AddLabel("Tiers 1-2: part-name + framework detection.\nScan & Extract runs them; Tiers 3-5 are on the right.", true)
 	scanGroup:AddToggle("calApplyParts",  { Text = "Auto-Add Character Parts", Default = true,  Tooltip = "Add detected non-standard character part names to the HBE\npart list and select them. (Default: ON)" })
 	scanGroup:AddToggle("calApplyAmmo",    { Text = "Auto-Add Guns to Inf-Ammo", Default = true, Tooltip = "Add detected gun tools to the Inf-Ammo gun list. (Default: ON)" })
 	scanGroup:AddToggle("calApplyShields", { Text = "Auto-Register Shields", Default = false, Tooltip = "Add detected shield parts to the Melee shield list. (Default: OFF)" })
 
 	local reportLabel = reportGroup:AddLabel("Run 'Scan & Extract' to fingerprint this game.", true)
+	-- The on-screen report is capped to fit; the FULL detail goes to clipboard / a file in
+	-- the FurryHBE/ folder so you can read or share long scans without UI overlap.
+	reportGroup:AddButton("Copy Full Report", function()
+		local t = (Bridge.Calibrate and Bridge.Calibrate.reportText) or ""
+		pcall(function() if setclipboard then setclipboard(t) end end)
+		Library:Notify("Full report copied to clipboard")
+	end):AddToolTip("Copy the complete last-scan report to your clipboard.")
+	reportGroup:AddButton("Save Report to File", function()
+		local t = (Bridge.Calibrate and Bridge.Calibrate.reportText) or ""
+		saveText("scan_" .. tostring(game.PlaceId) .. ".txt", t)
+	end):AddToolTip("Write the complete report to workspace/FurryHBE/ in your executor.")
 
 	local STD_PARTS = { Head = true, HumanoidRootPart = true, Torso = true, UpperTorso = true, LowerTorso = true,
 		["Left Arm"] = true, ["Right Arm"] = true, ["Left Leg"] = true, ["Right Leg"] = true,
@@ -5483,6 +5645,22 @@ pcall(function()
 	local AMMO_WORDS   = { "ammo", "mag", "clip", "round", "reserve", "bullet" }
 	local GUN_WORDS    = { "gun", "rifle", "pistol", "smg", "shotgun", "sniper", "ak", "glock", "launcher", "uzi", "deagle", "carbine", "revolver" }
 	local SHIELD_WORDS = { "shield", "buckler", "barrier" }
+	-- Names we must NEVER auto-add as hitbox parts: cosmetics/gear welded into the rig
+	-- (SafetyGlasses, Hardhat, Toolbelt, HiVis...) and gun/tool internals (Handguard,
+	-- "Stock end", Barrel, Trigger, Mag...). These polluted the Body Parts list before and
+	-- there was no way to tell them from real limbs -- now they're filtered out up front.
+	local COSMETIC_WORDS = { "glass", "hat", "helmet", "cap", "hivis", "hi-vis", "hi vis", "vest",
+		"lanyard", "radio", "belt", "mesh", "badge", "card", "goggle", "mask", "visor",
+		"backpack", "bag", "strap", "patch", "logo", "decal", "accessory", "accessor", "hair",
+		"face", "shirt", "pants", "cloth", "fabric", "boot", "shoe", "watch", "armband", "tie",
+		"handguard", "stock", "barrel", "trigger", "muzzle", "sight", "scope", "magazine",
+		"flash", "hider", "suppress", "silenc", "grip", "rail", "bolt", "receiver", "chamber",
+		"sling", "wedge", "motor", "union", "release" }
+	-- Gun-internal part names: presence of these in a Tool means it's a gun even when its
+	-- name is just a brand ("Weston Ranger") and it carries no ammo IntValue.
+	local GUN_PARTS = { "trigger", "barrel", "muzzle", "magazine", "mag release", "chamber", "bolt",
+		"ironsight", "iron sight", "flashhider", "flash hider", "suppress", "silenc", "receiver",
+		"firerate", "fire rate", "handguard", "foregrip" }
 	local function nameHas(n, words) n = n:lower() for _, w in ipairs(words) do if n:find(w) then return true end end return false end
 
 	-- Add a name to a LinoriaLib multi-dropdown's Values (and optionally select it).
@@ -5567,13 +5745,30 @@ pcall(function()
 		end
 		local pc, nc = 0, 0
 		for _ in pairs(partNames) do pc = pc + 1 end
-		local nonStdList = {}
+		-- Split non-standard names into real-limb CANDIDATES vs cosmetic/weapon junk, and
+		-- track exactly what we newly add so "Undo Auto-Added" can reverse precisely.
+		local nonStdList, candidates, appliedList = {}, {}, {}
+		local prevSet = {}
+		if Options.extenderPartList then for _, v in ipairs(Options.extenderPartList.Values or {}) do prevSet[v] = true end end
 		for n in pairs(nonStd) do
 			nc = nc + 1; nonStdList[#nonStdList + 1] = n
-			if apply and Toggles.calApplyParts.Value then addToDropdown(Options.extenderPartList, n, true) end
+			if not nameHas(n, COSMETIC_WORDS) then
+				candidates[#candidates + 1] = n
+				if apply and Toggles.calApplyParts.Value then
+					if not prevSet[n] then appliedList[#appliedList + 1] = n end
+					addToDropdown(Options.extenderPartList, n, true)
+				end
+			end
 		end
-		r[#r + 1] = ("Parts: %d total, %d non-standard"):format(pc, nc)
-		if nc > 0 then r[#r + 1] = "  + " .. table.concat(nonStdList, ", ") end
+		Bridge.Calibrate.autoAdded = appliedList
+		r[#r + 1] = ("Parts: %d total, %d non-standard, %d real candidates"):format(pc, nc, #candidates)
+		if #candidates > 0 then r[#r + 1] = "  candidates: " .. table.concat(candidates, ", ") end
+		if apply and #appliedList > 0 then r[#r + 1] = "  auto-added: " .. table.concat(appliedList, ", ") end
+		if nc > #candidates then
+			local skipped = {}
+			for _, n in ipairs(nonStdList) do if nameHas(n, COSMETIC_WORDS) then skipped[#skipped + 1] = n end end
+			r[#r + 1] = "  skipped (cosmetic/weapon): " .. table.concat(skipped, ", ")
+		end
 
 		-- 2) guns / ammo (held + backpack tools)
 		local guns, ammoVals = {}, 0
@@ -5584,6 +5779,7 @@ pcall(function()
 						local isGun = nameHas(t.Name, GUN_WORDS)
 						for _, d in ipairs(t:GetDescendants()) do
 							if (d:IsA("IntValue") or d:IsA("NumberValue")) and nameHas(d.Name, AMMO_WORDS) then ammoVals = ammoVals + 1; isGun = true end
+							if not isGun and nameHas(d.Name, GUN_PARTS) then isGun = true end
 						end
 						if isGun then guns[t.Name] = true end
 					end
@@ -5658,13 +5854,18 @@ pcall(function()
 					if d:IsA("NumberValue") or d:IsA("IntValue") then
 						local n = d.Name:lower()
 						for _, w in ipairs({ "recoil", "spread", "kick", "bloom", "sway" }) do if n:find(w) then recoilN = recoilN + 1; break end end
+						if nameHas(d.Name, AMMO_WORDS) then isGun = true end
 					end
+					if not isGun and nameHas(d.Name, GUN_PARTS) then isGun = true end
 				end
 			end
 		end)
 		r[#r + 1] = ("Gun: %s, recoil values: %d"):format(isGun and "yes" or "no/none held", recoilN)
 
-		pcall(function() reportLabel:SetText(table.concat(r, "\n")) end)
+		-- Keep the full report for Copy/Save, but only show a compact, non-overflowing
+		-- slice on-screen (the long candidate lists used to wrap and cover the next box).
+		Bridge.Calibrate.reportText = table.concat(r, "\n")
+		pcall(function() reportLabel:SetText(capText(r, 8, 64)) end)
 		-- Expose results so any module can read the calibration (Tier 1+2 engine).
 		Bridge.Calibrate.parts, Bridge.Calibrate.guns, Bridge.Calibrate.shields = nonStd, guns, shields
 		Bridge.Calibrate.report = r
@@ -5676,10 +5877,10 @@ pcall(function()
 	local function keysOf(t) local o = {} for k in pairs(t) do o[#o + 1] = k end return o end
 	local function saveProfile(data)
 		if not writefile then Library:Notify("Executor has no writefile"); return end
-		pcall(function()
+		local ok = pcall(function()
 			writefile(CAL_FILE, HttpService:JSONEncode({ parts = keysOf(data.parts), guns = keysOf(data.guns), shields = keysOf(data.shields) }))
 		end)
-		Library:Notify("Saved profile for PlaceId " .. tostring(game.PlaceId))
+		Library:Notify(ok and ("Saved profile -> workspace/" .. CAL_FILE) or "Profile save failed")
 	end
 	local function loadProfile(notify)
 		if not (isfile and readfile and isfile(CAL_FILE)) then if notify then Library:Notify("No saved profile for this game") end return end
@@ -5697,6 +5898,27 @@ pcall(function()
 	scanGroup:AddButton("Scan Only (no apply)", function()
 		runScan(false); Library:Notify("Scan complete (report only)")
 	end):AddToolTip("Show what would be detected without changing any lists.")
+	-- Reverse an auto-apply: remove exactly what the last scan added (restores your prior
+	-- hitbox setup), or wipe the Body Parts list back to the limb defaults.
+	scanGroup:AddButton("Undo Auto-Added Parts", function()
+		local list = (Bridge.Calibrate and Bridge.Calibrate.autoAdded) or {}
+		local n = 0
+		for _, nm in ipairs(list) do pcall(function() removeBodyPart(nm); n = n + 1 end) end
+		if Bridge.Calibrate then Bridge.Calibrate.autoAdded = {} end
+		pcall(updatePlayers)
+		Library:Notify("Removed " .. n .. " auto-added part(s)")
+	end):AddToolTip("Remove exactly the parts the last Scan & Extract added -- leaves your manual ones (e.g. Head) alone.")
+	scanGroup:AddButton("Reset Body Parts to Default", function()
+		local removed = 0
+		if Options.extenderPartList then
+			for _, v in ipairs(table.clone(Options.extenderPartList.Values or {})) do
+				if not isDefaultBodyPart(v) then pcall(function() removeBodyPart(v); removed = removed + 1 end) end
+			end
+		end
+		if Bridge.Calibrate then Bridge.Calibrate.autoAdded = {} end
+		pcall(updatePlayers)
+		Library:Notify("Body Parts reset to default (removed " .. removed .. ")")
+	end):AddToolTip("Clear every non-default part from the HBE Body Parts list (keeps Head/Torso/limbs).")
 	scanGroup:AddButton("Save Profile", function()
 		saveProfile(runScan(false))
 	end):AddToolTip("Write the extracted profile to disk for this game (PlaceId).")
@@ -5741,7 +5963,7 @@ pcall(function()
 	local learnGroup = calTab:AddRightGroupbox("Learn (Tier 3)")
 	learnGroup:AddLabel("Snapshot -> do an action (shoot / take damage /\nearn) -> Analyze. Finds the values that changed.", true)
 	learnGroup:AddDropdown("learnFilter", { Text = "Show", Values = { "Decreased (ammo/health/spent)", "Increased (currency/score)", "Any change" }, Default = "Any change", Multi = false, AllowNull = false })
-	local learnInfo = learnGroup:AddLabel("Snapshot to begin.")
+	local learnInfo = learnGroup:AddLabel("Snapshot to begin.", true)
 
 	local function collectFields()
 		local fields = {}
@@ -5764,6 +5986,24 @@ pcall(function()
 			end)
 		end
 		scan(lPlayer); scan(lPlayer.Character)
+		scan(lPlayer:FindFirstChild("Backpack"))
+		-- HUD numbers: in many games (BRM5-style) ammo/health/currency live ONLY as
+		-- on-screen text, not as a Value -- so snapshot the first number in each short
+		-- TextLabel/Button too. That's how Analyze catches a mag dropping 28 -> 27.
+		pcall(function()
+			local pg = lPlayer:FindFirstChildOfClass("PlayerGui")
+			if pg then
+				local n = 0
+				local function firstNum(s) local m = tostring(s):match("%-?%d+%.?%d*"); return m and tonumber(m) or nil end
+				for _, d in ipairs(pg:GetDescendants()) do
+					n = n + 1; if n > 12000 then break end
+					if (d:IsA("TextLabel") or d:IsA("TextButton")) and #tostring(d.Text) <= 12 then
+						local num = firstNum(d.Text)
+						if num then fields[#fields + 1] = { label = "HUD:" .. d.Name, get = function() return firstNum(d.Text) end } end
+					end
+				end
+			end
+		end)
 		return fields
 	end
 	local snap = {}
@@ -5813,7 +6053,7 @@ pcall(function()
 	-- does NOT touch Roblox's binary anti-tamper -- that's a separate layer.)
 	local dsGroup = calTab:AddRightGroupbox("Phantom Recon (Tier 4)")
 	dsGroup:AddToggle("deepScanEnabled", { Text = "Enable Deep Scan", Default = false, Tooltip = "ADVANCED / opt-in. Read-only reflection of the game's scripts +\nmemory (getsenv/getscriptclosure/getconstants/getnilinstances).\nMore detectable at the executor level than other tiers, so it's\noff by default and runs nothing until you press the button." })
-	local dsInfo = dsGroup:AddLabel("Deep Scan off.")
+	local dsInfo = dsGroup:AddLabel("Deep Scan off.", true)
 	Bridge.DeepScan = Bridge.DeepScan or { acActive = false, watched = {}, avoid = {}, hotProps = {} }
 
 	local AC_SIGS = { "anticheat", "anti-cheat", "antiexploit", "anti_exploit", "anti exploit", "exploitdetect",
@@ -5906,11 +6146,18 @@ pcall(function()
 			(#hot > 0 and ("Watches: " .. table.concat(hot, ", ")) or "Watches: (none of the common props)"),
 			("Frame watchers: HB %d / Step %d / Rndr %d"):format(conns.Heartbeat or 0, conns.Stepped or 0, conns.RenderStepped or 0),
 			"Footprint: read-only (0 writes, 0 fires)",
+			(#ac > 0 and "Next: features now auto-steer around these." or "Next: no AC found -> run Tier 5 Auto-Configure."),
 		}
-		pcall(function() dsInfo:SetText(table.concat(lines, "\n")) end)
+		Bridge.DeepScan.reportText = table.concat(lines, "\n")
+		pcall(function() dsInfo:SetText(capText(lines, 8, 70)) end)
 		Library:Notify(#ac > 0 and ("AC detected: " .. ac[1].name) or "No named anti-cheat found")
 	end
 	dsGroup:AddButton("Run Phantom Probe", runProbe):AddToolTip("Read-only recon: fingerprint the anti-cheat, map honeypots, and read which\nvalues/remotes it watches -- without touching any of them. Nothing is fired or written.")
+	dsGroup:AddButton("Copy Phantom Report", function()
+		local t = (Bridge.DeepScan and Bridge.DeepScan.reportText) or ""
+		pcall(function() if setclipboard then setclipboard(t) end end)
+		Library:Notify("Phantom report copied to clipboard")
+	end):AddToolTip("Copy the full Tier-4 recon output to your clipboard.")
 
 	-- Minefield map other modules consult before they act.
 	Bridge.isHoneypot = function(inst) return Bridge.DeepScan.avoid and Bridge.DeepScan.avoid[inst] ~= nil end
@@ -5926,7 +6173,7 @@ pcall(function()
 	ciGroup:AddInput("profileSourceUrl", { Text = "Profile Source URL", Default = "", Tooltip = "Base raw-JSON URL of a community profile repo. Fetches\n<url>/<PlaceId>.json. Empty = local + live scan only." })
 	local ciInfo = ciGroup:AddLabel("Auto-config: community -> local DB -> live scan.")
 
-	local DB_FILE = "FurryHBE_ProfileDB.json"
+	local DB_FILE = outPath("ProfileDB.json")
 	local function keysOfSet(t) local o = {} if type(t) == "table" then for k in pairs(t) do o[#o + 1] = k end end return o end
 	local function readDB()
 		if not (isfile and readfile and isfile(DB_FILE)) then return {} end
@@ -5981,6 +6228,57 @@ pcall(function()
 		Library:Notify("Saved to local DB (" .. countKeys(db) .. " games stored)")
 	end):AddToolTip("Scan and store this game's profile in your personal DB.")
 
+	-- ===== Instant Interact (ProximityPrompt HoldDuration -> 0) ==========
+	-- Detector + override for "hold E/T to interact" prompts: drops every prompt's
+	-- HoldDuration to 0 so interacting is a tap, optionally widens activation distance,
+	-- and restores the originals when turned off. New prompts are caught live.
+	local ppGroup = calTab:AddLeftGroupbox("Instant Interact")
+	ppGroup:AddToggle("instantInteract", { Text = "Instant Interact (Hold = 0)", Default = false, Tooltip = "Set every ProximityPrompt's HoldDuration to 0 so 'hold to\ninteract' prompts trigger instantly. Restores on off. (Default: OFF)" })
+	ppGroup:AddSlider("interactDistance", { Text = "Min Activation Dist", Min = 0, Max = 50, Default = 0, Rounding = 0, Tooltip = "Raise every prompt's MaxActivationDistance to at least this many\nstuds (0 = leave each prompt's own distance alone)." })
+	local ppInfo = ppGroup:AddLabel("Prompts: idle", true)
+	local ppOrig = setmetatable({}, { __mode = "k" })  -- [prompt] = { holdDuration, maxActivationDistance }
+	local ppConn = nil
+	local function applyPrompt(pp)
+		if not (typeof(pp) == "Instance" and pp:IsA("ProximityPrompt")) then return end
+		if not ppOrig[pp] then ppOrig[pp] = { pp.HoldDuration, pp.MaxActivationDistance } end
+		pcall(function() pp.HoldDuration = 0 end)
+		local minD = (Options.interactDistance and Options.interactDistance.Value) or 0
+		if minD > 0 then pcall(function() if pp.MaxActivationDistance < minD then pp.MaxActivationDistance = minD end end) end
+	end
+	local function sweepPrompts()
+		local n = 0
+		pcall(function()
+			for _, d in ipairs(Workspace:GetDescendants()) do
+				if d:IsA("ProximityPrompt") then applyPrompt(d); n = n + 1 end
+			end
+		end)
+		pcall(function() ppInfo:SetText("Prompts: " .. n .. (n > 0 and " set to instant" or " (none found in workspace)")) end)
+		return n
+	end
+	local function restorePrompts()
+		for pp, o in pairs(ppOrig) do
+			if typeof(pp) == "Instance" and pp.Parent then pcall(function() pp.HoldDuration = o[1]; pp.MaxActivationDistance = o[2] end) end
+		end
+		table.clear(ppOrig)
+	end
+	Toggles.instantInteract:OnChanged(function()
+		if Toggles.instantInteract.Value then
+			sweepPrompts()
+			if not ppConn then
+				ppConn = Workspace.DescendantAdded:Connect(function(d)
+					if Toggles.instantInteract.Value and d:IsA("ProximityPrompt") then task.defer(applyPrompt, d) end
+				end)
+			end
+		else
+			if ppConn then pcall(function() ppConn:Disconnect() end); ppConn = nil end
+			restorePrompts()
+			pcall(function() ppInfo:SetText("Prompts: restored to original") end)
+		end
+	end)
+	ppGroup:AddButton("Re-scan Prompts", function()
+		if Toggles.instantInteract.Value then sweepPrompts() else Library:Notify("Enable Instant Interact first") end
+	end):AddToolTip("Re-apply HoldDuration=0 to every ProximityPrompt currently in the workspace.")
+
 	-- Auto-load a previously-saved profile for this place on startup.
 	pcall(function() loadProfile(false) end)
 	print("[Calibrate] F10 extract/calibrate registered")
@@ -6016,21 +6314,37 @@ pcall(function()
 	Bridge:RegisterPluginSource("Remote",   { tab = "Remote",   file = "remotereplay.lua", url = RAW .. "remotereplay.lua", desc = "Manual RemoteEvent replay at the nearest target (for remote-damage games)." })
 	Bridge:RegisterPluginSource("InfAmmo",  { tab = "Inf Ammo", file = "infammo.lua",     url = RAW .. "infammo.lua",     desc = "Adaptive inf-ammo (5 strategies + learning) with gun picker." })
 
+	-- Plugins load on demand: their tabs + features DON'T EXIST until enabled, so an
+	-- absent Aimbot/Precision tab just looks broken. Make "they're off" obvious with a
+	-- live loaded/total summary plus a one-time warning notification on startup.
+	local pmTotal, pmLoaded, loadedSet = 0, 0, {}
+	for _ in pairs(Bridge.PluginSources) do pmTotal = pmTotal + 1 end
+	local pmSummary = pmGroup:AddLabel("Plugins loaded: 0 / " .. pmTotal .. "  (enable below)", true)
+	local function refreshSummary()
+		pcall(function() pmSummary:SetText(("Plugins loaded: %d / %d%s"):format(pmLoaded, pmTotal, pmLoaded == 0 and "  --  ALL OFF, enable below" or "")) end)
+	end
+
 	-- One manager row (status + Enable + Unload) per registered plugin.
 	local function addRow(name)
 		local status = pmGroup:AddLabel(name .. ": not loaded")
 		pmGroup:AddButton("Enable " .. name, function()
 			local ok, err = Bridge:EnablePlugin(name)
 			status:SetText(name .. (ok and ": loaded" or (": FAILED - " .. tostring(err))))
+			if ok and not loadedSet[name] then loadedSet[name] = true; pmLoaded = pmLoaded + 1; refreshSummary() end
 			if Library and Library.Notify then Library:Notify(ok and ("Enabled " .. name) or ("Enable failed: " .. tostring(err))) end
 		end):AddToolTip(Bridge.PluginSources[name] and Bridge.PluginSources[name].desc or "")
 		pmGroup:AddButton("Unload " .. name, function()
 			Bridge:UnloadPlugin(name)
 			status:SetText(name .. ": not loaded")
+			if loadedSet[name] then loadedSet[name] = nil; pmLoaded = math.max(0, pmLoaded - 1); refreshSummary() end
 			if Library and Library.Notify then Library:Notify("Unloaded " .. name) end
 		end)
 	end
 	for n in pairs(Bridge.PluginSources) do addRow(n) end
+	refreshSummary()
+	if Library and Library.Notify then
+		pcall(function() Library:Notify("Plugins are OFF -- enable them in the Plugins tab to use Aimbot / Precision / Teleport / Inf Ammo / etc.", 10) end)
+	end
 	print("[Plugins] manager + external plugin registry (Aimbot, Spectate)")
 end)
 
