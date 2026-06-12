@@ -97,14 +97,21 @@ return {
 		-- Bottom-of-tab tutorial.
 		local howGroup = ctx:Groupbox("How to Use", "left")
 		howGroup:AddLabel(
-			"Generic client-side gun-stat overrides. Hold a gun, flip a toggle, and watch the\n" ..
+			"Generic client-side gun-stat overrides.\n" ..
+			"Hold a gun, flip a toggle, watch the\n" ..
 			"'Fields hit' readout:\n" ..
-			"  - Fields hit > 0  -> the stat is a client-side Value; the toggle is working.\n" ..
-			"  - Fields hit = 0  -> the game keeps that stat SERVER-SIDE; this can't touch it.\n" ..
-			"    Use Calibrate -> Deep-Dump Held Weapon and ask for a TAILORED hack instead.\n\n" ..
-			"FIRE RATE: set 'Value is' to Delay if the gun stores seconds-between-shots (most do),\n" ..
-			"  or Rate if it stores shots-per-second, then raise Factor.\n\n" ..
-			"Everything restores when you toggle off, switch guns, or unload -- no permanent edits.",
+			"  - > 0  -> stat is client-side; the\n" ..
+			"    toggle is working.\n" ..
+			"  - = 0  -> the game keeps it SERVER-\n" ..
+			"    SIDE; this can't touch it. Use\n" ..
+			"    Calibrate -> Deep-Dump and ask for\n" ..
+			"    a TAILORED hack instead.\n\n" ..
+			"FIRE RATE: set 'Value is' to Delay if\n" ..
+			"the gun stores seconds-between-shots\n" ..
+			"(most do), or Rate if shots-per-second,\n" ..
+			"then raise Factor.\n\n" ..
+			"Everything restores on toggle-off / gun-\n" ..
+			"switch / unload -- no permanent edits.",
 			true)
 
 		pluginCleanup = function()
