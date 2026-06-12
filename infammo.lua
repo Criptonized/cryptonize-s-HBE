@@ -190,15 +190,21 @@ return {
 		-- Bottom-of-tab tutorial.
 		local howG = miscTab:AddLeftGroupbox("How to Use")
 		howG:AddLabel(
-			"Refills numeric ammo values on your gun each tick. CLIENT-SIDE only.\n\n" ..
-			"  1. Register your gun: 'Register Gun in Hand' or 'Register Gun (hold-pick)' -- or flip\n" ..
-			"     'Apply to Any Tool'.\n" ..
-			"  2. Enable Inf Ammo. The 'Detection' label shows which method found the ammo.\n\n" ..
-			"STILL RUNS OUT? The game keeps ammo server-side. Confirm it: Calibrate -> Learn ->\n" ..
-			"  Snapshot, fire, Analyze. If the only thing that changed is a 'HUD:...' label, the real\n" ..
-			"  ammo is server-side and CANNOT be refilled from the client (no value to write).\n\n" ..
-			"Manual Ammo Name = the exact name of a client ammo Value (e.g. 'Bullets') -- NOT the\n" ..
-			"on-screen number and NOT the caliber.",
+			"Refills numeric ammo values on your gun\n" ..
+			"each tick. CLIENT-SIDE only.\n\n" ..
+			"  1. Register your gun (in-hand or\n" ..
+			"     hold-pick), or 'Apply to Any Tool'.\n" ..
+			"  2. Enable Inf Ammo. 'Detection' shows\n" ..
+			"     which method found the ammo.\n\n" ..
+			"STILL RUNS OUT? Ammo is server-side.\n" ..
+			"Confirm: Calibrate -> Learn -> Snapshot,\n" ..
+			"fire, Analyze. If the only change is a\n" ..
+			"'HUD:...' label, the real ammo is\n" ..
+			"server-side and CANNOT be refilled\n" ..
+			"(there's no value to write).\n\n" ..
+			"Manual Ammo Name = the exact name of a\n" ..
+			"client ammo Value (e.g. 'Bullets') --\n" ..
+			"NOT the on-screen number or the caliber.",
 			true)
 		pluginCleanup = function() if ammoConn then pcall(function() ammoConn:Disconnect() end) end end
 	end,
