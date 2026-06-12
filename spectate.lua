@@ -5,10 +5,11 @@ return {
 	load = function(ctx)
 		local Players = game:GetService("Players")
 		local lp = Players.LocalPlayer
-		local cam = workspace.CurrentCamera
 		local g = ctx:Groupbox("Spectate")
 		local label = g:AddLabel("Spectating: self")
 		local list, idx = {}, 0
+		-- Read the camera LIVE each time: Roblox replaces the Camera on respawn, so a
+		-- reference captured at load goes stale and spectate silently stops working.
 		local function refresh()
 			list = {}
 			for _, p in ipairs(Players:GetPlayers()) do if p ~= lp then list[#list + 1] = p end end
@@ -16,11 +17,11 @@ return {
 		local function setSubject(p)
 			local ch = p and p.Character
 			local hum = ch and ch:FindFirstChildWhichIsA("Humanoid")
-			if hum then cam.CameraSubject = hum; label:SetText("Spectating: " .. p.Name) end
+			if hum then workspace.CurrentCamera.CameraSubject = hum; label:SetText("Spectating: " .. p.Name) end
 		end
 		local function selfSubject()
 			local hum = lp.Character and lp.Character:FindFirstChildWhichIsA("Humanoid")
-			if hum then cam.CameraSubject = hum end
+			if hum then workspace.CurrentCamera.CameraSubject = hum end
 			idx = 0; label:SetText("Spectating: self")
 		end
 		g:AddButton("Next Player", function()
