@@ -1,8 +1,8 @@
-if getgenv().FurryHBEInjected then
+if getgenv().CryptsHBEInjected then
 	return
 end
-getgenv().FurryHBEInjected = true
-getgenv().FurryHBELoaded = false
+getgenv().CryptsHBEInjected = true
+getgenv().CryptsHBELoaded = false
 
 if not game:IsLoaded() then
 	game.Loaded:Wait()
@@ -54,7 +54,7 @@ if not SaveManager then
 end
 
 SaveManager:SetLibrary(Library)
-SaveManager:SetFolder("FurryHBE")
+SaveManager:SetFolder("CryptsHBE")
 
 -- NOTE: the previous global Library.AddToolTip wrapper was removed -- on some
 -- LinoriaLib forks it broke control creation (the UI only built the first tab).
@@ -268,8 +268,8 @@ end
 -- Potassium/Solara through the GUI fallback, which uses real TextLabels/Frames in
 -- a ScreenGui and always renders.
 --   Overrides (set before executing):
---     getgenv().FurryHBE_ForceGuiESP   = true  -> always use the GUI fallback
---     getgenv().FurryHBE_ForceNativeESP = true -> always use native Drawing
+--     getgenv().CryptsHBE_ForceGuiESP   = true  -> always use the GUI fallback
+--     getgenv().CryptsHBE_ForceNativeESP = true -> always use native Drawing
 local execName = ""
 pcall(function() if identifyexecutor then execName = tostring((identifyexecutor())) end end)
 execName = execName:lower()
@@ -282,14 +282,14 @@ local nativeConstructs = pcall(function()
 end)
 
 local useNativeDrawing
-if getgenv().FurryHBE_ForceGuiESP then
+if getgenv().CryptsHBE_ForceGuiESP then
 	useNativeDrawing = false
-elseif getgenv().FurryHBE_ForceNativeESP then
+elseif getgenv().CryptsHBE_ForceNativeESP then
 	useNativeDrawing = nativeConstructs
 else
 	useNativeDrawing = nativeConstructs and not guiOnlyExecutor
 end
-getgenv().FurryHBE_UsingNativeESP = useNativeDrawing  -- readable for debugging
+getgenv().CryptsHBE_UsingNativeESP = useNativeDrawing  -- readable for debugging
 
 if useNativeDrawing then
 	-- Use native Drawing directly — no wrapper, no proxy, no mutation.
@@ -608,7 +608,7 @@ local function cleanup()
 	if resetWorldParts then resetWorldParts() end
 
 	-- Tear down any registered add-ons (Precision, Streamer, ...).
-	local bridge = getgenv().FurryHBE
+	local bridge = getgenv().CryptsHBE
 	if bridge and bridge.Addons then
 		for name, addon in pairs(bridge.Addons) do
 			if type(addon.onUnload) == "function" then
@@ -620,7 +620,7 @@ local function cleanup()
 	-- F13c: drop every tracked connection.
 	if bridge and bridge.DisconnectAll then pcall(function() bridge:DisconnectAll() end) end
 
-	getgenv().FurryHBELoaded = false
+	getgenv().CryptsHBELoaded = false
 end
 
 -- Window setup (with failsafe)
@@ -630,6 +630,10 @@ local windowConfig = {
 	AutoShow = true,
 	TabPadding = 8,
 	MenuFadeTime = 0.2,
+	-- Wider than LinoriaLib's ~550px default: each tab has two columns, so the default
+	-- left ~250px columns clipped longer labels/descriptions on the right. ~720 gives the
+	-- columns room so tutorials, the Plugin Manager text, etc. fit instead of cutting off.
+	Size = UDim2.fromOffset(720, 600),
 }
 
 local mainWindow = safeCall("UI Creation", function()
@@ -637,7 +641,7 @@ local mainWindow = safeCall("UI Creation", function()
 end)
 
 if not mainWindow then
-	warn("[FurryHBE] Failed to create main window, retrying...")
+	warn("[CryptsHBE] Failed to create main window, retrying...")
 	task.wait(0.5)
 	mainWindow = Library:CreateWindow(windowConfig)
 end
@@ -750,10 +754,10 @@ function Bridge:NewContext(name, tab)
 	return C
 end
 function Bridge:RegisterPluginSource(name, info) self.PluginSources[name] = info end
--- Base URL for external plugin files (set getgenv().FurryHBE_PluginBase to your
+-- Base URL for external plugin files (set getgenv().CryptsHBE_PluginBase to your
 -- GitHub raw folder). EnablePlugin fetches <base>/<file> for plugins with no inline
 -- source. Per-plugin info.url / info.file / info.source all override.
-Bridge.PluginBase = getgenv().FurryHBE_PluginBase or "https://raw.githubusercontent.com/Criptonized/cryptonize-s-HBE/main"
+Bridge.PluginBase = getgenv().CryptsHBE_PluginBase or "https://raw.githubusercontent.com/Criptonized/cryptonize-s-HBE/main"
 function Bridge:EnablePlugin(name)
 	local entry = self.Plugins[name]
 	if entry and entry.loaded then return true end
@@ -773,7 +777,7 @@ function Bridge:EnablePlugin(name)
 			if ok and type(body) == "string" then src = body end
 		end
 	end
-	if not src then return false, "no source/url (set getgenv().FurryHBE_PluginBase)" end
+	if not src then return false, "no source/url (set getgenv().CryptsHBE_PluginBase)" end
 	local fn, cerr = loadstring(src, "=" .. name)
 	if not fn then return false, "compile: " .. tostring(cerr) end
 	local ok, mod = pcall(fn)
@@ -795,7 +799,7 @@ function Bridge:UnloadPlugin(name)
 	pcall(collectgarbage)
 end
 
-getgenv().FurryHBE = Bridge
+getgenv().CryptsHBE = Bridge
 -- Convenience aliases some add-ons expect at the top level.
 getgenv().Library = Library
 getgenv().mainWindow = mainWindow
@@ -855,7 +859,7 @@ do
 	end
 	function Bridge:CancelHoldPick() stop() end
 
-	RunService:BindToRenderStep("FurryHBE_HoldPick", Enum.RenderPriority.Last.Value + 2, function()
+	RunService:BindToRenderStep("CryptsHBE_HoldPick", Enum.RenderPriority.Last.Value + 2, function()
 		if not holdActive then
 			ring.Visible = false; fill.Visible = false
 			return
@@ -922,7 +926,7 @@ do
 	Bridge:RegisterAddon("HoldPick", {
 		onUnload = function()
 			pcall(stop)
-			pcall(function() RunService:UnbindFromRenderStep("FurryHBE_HoldPick") end)
+			pcall(function() RunService:UnbindFromRenderStep("CryptsHBE_HoldPick") end)
 			safeRemoveDrawing(ring)
 			safeRemoveDrawing(fill)
 		end,
@@ -944,7 +948,7 @@ local statusGroupbox = mainTab:AddRightGroupbox("Status")
 local suppressMasterNotify = true
 local masterToggle = hitboxGroupbox:AddToggle("MasterToggle", { Text = "Master Toggle", Default = true, Tooltip = "Master on/off switch for the entire script. (Default: ON)" }):OnChanged(function()
 	if Toggles.MasterToggle.Value then
-		getgenv().FurryHBELoaded = true
+		getgenv().CryptsHBELoaded = true
 		updatePlayers()
 		if not suppressMasterNotify then Library:Notify("HBE Enabled") end
 	else
@@ -952,7 +956,7 @@ local masterToggle = hitboxGroupbox:AddToggle("MasterToggle", { Text = "Master T
 		-- never runs again to undo the extension and the visuals stay stuck on.
 		if resetAllPlayers then resetAllPlayers() end
 		if resetWorldParts then resetWorldParts() end
-		getgenv().FurryHBELoaded = false
+		getgenv().CryptsHBELoaded = false
 		if not suppressMasterNotify then Library:Notify("HBE Disabled") end
 	end
 end)
@@ -1169,13 +1173,13 @@ espFilterGroupbox:AddToggle("espFOVFilter", { Text = "FOV Filter", Default = fal
 -- ESP backend diagnostics (#1 render-verify + #2 live readout). The Drawing path is
 -- decided at load; the override sets a getgenv flag for the NEXT execute, and the
 -- Test button paints a native AND a GUI marker so you can SEE which one renders.
-espFilterGroupbox:AddLabel("Backend: " .. (getgenv().FurryHBE_UsingNativeESP and "Native Drawing" or "GUI fallback"), true)
+espFilterGroupbox:AddLabel("Backend: " .. (getgenv().CryptsHBE_UsingNativeESP and "Native Drawing" or "GUI fallback"), true)
 local espDiagLabel = espFilterGroupbox:AddLabel("ESP drawn: -")
 local espDiagTick = 0
 espFilterGroupbox:AddDropdown("espBackendOverride", { Text = "Force Backend", Values = { "Auto", "Native", "GUI" }, Default = "Auto", Multi = false, AllowNull = false, Tooltip = "Force the ESP draw backend on the NEXT execute (re-run to apply).\nNative = Drawing API, GUI = fallback frames. (Default: Auto)" }):OnChanged(function()
 	local v = Options.espBackendOverride.Value
-	getgenv().FurryHBE_ForceNativeESP = (v == "Native") or nil
-	getgenv().FurryHBE_ForceGuiESP = (v == "GUI") or nil
+	getgenv().CryptsHBE_ForceNativeESP = (v == "Native") or nil
+	getgenv().CryptsHBE_ForceGuiESP = (v == "GUI") or nil
 	if v ~= "Auto" then Library:Notify("ESP backend -> " .. v .. ": re-execute to apply") end
 end)
 espFilterGroupbox:AddButton("Test ESP Backends (3s)", function()
@@ -1190,7 +1194,7 @@ espFilterGroupbox:AddButton("Test ESP Backends (3s)", function()
 		end
 	end)
 	pcall(function()
-		local sg = Instance.new("ScreenGui"); sg.Name = "FurryHBE_ESPTest"; sg.IgnoreGuiInset = true
+		local sg = Instance.new("ScreenGui"); sg.Name = "CryptsHBE_ESPTest"; sg.IgnoreGuiInset = true
 		sg.DisplayOrder = 9e8; sg.Parent = getSafeGuiParent()
 		local lb = Instance.new("TextLabel"); lb.AnchorPoint = Vector2.new(0.5, 0.5)
 		lb.Position = UDim2.fromOffset(cx, cy + 40); lb.Size = UDim2.fromOffset(260, 32)
@@ -1276,7 +1280,7 @@ local whitelistCountLabel = whitelistGroupbox:AddLabel("Whitelisted: 0")
 -- Whitelist auto-persistence: saved to disk and restored on every execute, so you
 -- never have to re-whitelist everyone again (no full config-save required). It also
 -- re-applies when a whitelisted player rejoins the server.
-local WL_FILE = "FurryHBE_Whitelist.json"
+local WL_FILE = "CryptsHBE_Whitelist.json"
 local savedWhitelist = {}
 local function applyWhitelist()
 	local list = Options.whitelistPlayerList
@@ -1396,7 +1400,7 @@ profilesGroupbox:AddButton("Save Custom Profile", function()
 	-- Best-effort persistence to disk (executor-dependent).
 	pcall(function()
 		if writefile then
-			writefile("FurryHBE_CustomProfile.json", game:GetService("HttpService"):JSONEncode(snap))
+			writefile("CryptsHBE_CustomProfile.json", game:GetService("HttpService"):JSONEncode(snap))
 		end
 	end)
 	Library:Notify("Saved current settings as 'Custom' profile")
@@ -1404,8 +1408,8 @@ end):AddToolTip("Snapshot the current settings into a loadable 'Custom' profile"
 
 -- Restore a previously saved custom profile from disk, if present.
 pcall(function()
-	if isfile and isfile("FurryHBE_CustomProfile.json") and readfile then
-		local data = game:GetService("HttpService"):JSONDecode(readfile("FurryHBE_CustomProfile.json"))
+	if isfile and isfile("CryptsHBE_CustomProfile.json") and readfile then
+		local data = game:GetService("HttpService"):JSONDecode(readfile("CryptsHBE_CustomProfile.json"))
 		if type(data) == "table" then
 			profiles["Custom"] = data
 			if not table.find(Options.profileSelect.Values, "Custom") then
@@ -1630,7 +1634,7 @@ local function isLocalSeated()
 end
 
 function runUpdatePlayers()
-	if not getgenv().FurryHBELoaded then return end
+	if not getgenv().CryptsHBELoaded then return end
 
 	-- Safety: stop extending while the local player is dead/spectating.
 	if Toggles.autoOffWhenDead and Toggles.autoOffWhenDead.Value and isLocalDead() then
@@ -1733,7 +1737,7 @@ function resetWorldParts()
 end
 
 local function updateWorldParts()
-	local extendOn = getgenv().FurryHBELoaded and Toggles.extenderToggled and Toggles.extenderToggled.Value
+	local extendOn = getgenv().CryptsHBELoaded and Toggles.extenderToggled and Toggles.extenderToggled.Value
 	local activeNames = Options.extenderPartList and Options.extenderPartList:GetActiveValues() or {}
 	local size = Options.extenderSize and Options.extenderSize.Value or 10
 	for part, d in pairs(worldParts) do
@@ -1787,7 +1791,7 @@ end
 
 -- Render step for ESP (with failsafe)
 RunService:BindToRenderStep("furryWalls", Enum.RenderPriority.Camera.Value - 1, function()
-	if not getgenv().FurryHBELoaded then return end
+	if not getgenv().CryptsHBELoaded then return end
 	-- Low-FPS throttle: skip some ESP redraws when frames are scarce. (F9)
 	if Bridge.Perf and Bridge.Perf.gateESP and Bridge.Perf.gateESP() then return end
 	-- Half-Rate ESP (perf): render every other frame on demand.
@@ -1860,7 +1864,7 @@ local function updateStatus()
 		if Options.updateRate and Options.updateRate.Value > 30 then r = r + 1 end
 		if not (Options.maxPlausibleMult and Options.maxPlausibleMult.Value > 0) then r = r + 1 end
 		-- Phantom Recon (Tier 4): a detected anti-cheat raises the risk floor.
-		local b = getgenv().FurryHBE
+		local b = getgenv().CryptsHBE
 		local acTag = ""
 		if b and b.DeepScan and b.DeepScan.acActive then r = r + 3; acTag = " [AC detected]" end
 		riskLabel:SetText("Detection risk: " .. (r <= 2 and "Low" or (r <= 4 and "Medium" or "High")) .. acTag)
@@ -2530,7 +2534,7 @@ function addPlayer(player)
 			local extTransparency = Bridge.Streamer.hideHitbox and 1 or Options.extenderTransparency.Value
 			local d = defaultProperties[part]
 			-- Drop the legacy SelectionBox outline from older builds if present.
-			local oldSel = part:FindFirstChild("FurryHBE_Outline")
+			local oldSel = part:FindFirstChild("CryptsHBE_Outline")
 			if oldSel then oldSel:Destroy() end
 
 			if Toggles.outlineMode and Toggles.outlineMode.Value then
@@ -2548,10 +2552,10 @@ function addPlayer(player)
 					if face then face.Transparency = d.Transparency end
 				end
 
-				local proxy = part:FindFirstChild("FurryHBE_HitProxy")
+				local proxy = part:FindFirstChild("CryptsHBE_HitProxy")
 				if not proxy then
 					proxy = Instance.new("Part")
-					proxy.Name = "FurryHBE_HitProxy"
+					proxy.Name = "CryptsHBE_HitProxy"
 					proxy.Transparency = 1
 					proxy.Massless = true
 					proxy.CanCollide = false
@@ -2565,25 +2569,29 @@ function addPlayer(player)
 					weld.Part0 = part
 					weld.Part1 = proxy
 					weld.Parent = proxy
-					local hl = Instance.new("Highlight")
-					hl.Name = "FurryHBE_OutlineHL"
-					hl.Adornee = proxy
-					hl.FillTransparency = 1
-					hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-					hl.Parent = proxy
+					-- A SelectionBox draws a wireframe box around the (invisible) hit proxy.
+					-- Unlike a Highlight, it renders even though the proxy is Transparency=1
+					-- (a Highlight needs visible geometry to outline -- that's why the old
+					-- outline never showed). LineThickness is in studs; it's always-on-top.
+					local sb = Instance.new("SelectionBox")
+					sb.Name = "CryptsHBE_OutlineSB"
+					sb.Adornee = proxy
+					sb.SurfaceTransparency = 1
+					sb.LineThickness = 0.05
+					sb.Parent = proxy
 				end
 				proxy.Size = targetSize
 				proxy.CanCollide = Toggles.collisionsToggled.Value
-				local hl = proxy:FindFirstChild("FurryHBE_OutlineHL")
-				if hl then
-					hl.OutlineColor = (Options.outlineColor and Options.outlineColor.Value) or Color3.fromRGB(255, 0, 0)
-					hl.OutlineTransparency = (Options.outlineTransparency and Options.outlineTransparency.Value) or 0
-					hl.FillTransparency = 1
+				local sb = proxy:FindFirstChild("CryptsHBE_OutlineSB")
+				if sb then
+					sb.Color3 = (Options.outlineColor and Options.outlineColor.Value) or Color3.fromRGB(255, 0, 0)
+					sb.Transparency = (Options.outlineTransparency and Options.outlineTransparency.Value) or 0
+					sb.SurfaceTransparency = 1
 				end
 			else
 				-- Normal extend: drop any outline proxy; the real part stays enlarged
 				-- (sized/Massless/CanCollide already applied above).
-				local proxy = part:FindFirstChild("FurryHBE_HitProxy")
+				local proxy = part:FindFirstChild("CryptsHBE_HitProxy")
 				if proxy then proxy:Destroy() end
 				part.Transparency = extTransparency
 				if part.Name == "Head" then
@@ -2598,9 +2606,9 @@ function addPlayer(player)
 			part.Size = d.Size
 			part.Transparency = d.Transparency
 			currentSizes[part] = d.Size
-			local ob = part:FindFirstChild("FurryHBE_Outline")
+			local ob = part:FindFirstChild("CryptsHBE_Outline")
 			if ob then ob:Destroy() end
-			local px = part:FindFirstChild("FurryHBE_HitProxy")
+			local px = part:FindFirstChild("CryptsHBE_HitProxy")
 			if px then px:Destroy() end
 
 			if part.Name == "Head" then
@@ -2643,9 +2651,9 @@ function addPlayer(player)
 					v.Transparency = d.Transparency
 					currentSizes[v] = d.Size
 						appliedProps[v] = { Size = d.Size, Transparency = d.Transparency, CanCollide = d.CanCollide, Massless = d.Massless }
-					local ob = v:FindFirstChild("FurryHBE_Outline")
+					local ob = v:FindFirstChild("CryptsHBE_Outline")
 					if ob then ob:Destroy() end
-					local px = v:FindFirstChild("FurryHBE_HitProxy")
+					local px = v:FindFirstChild("CryptsHBE_HitProxy")
 					if px then px:Destroy() end
 					if v.Name == "Head" then
 						local face = v:FindFirstChild("face")
@@ -3419,14 +3427,14 @@ end
 local function finalInit()
 	-- Honor the Master Toggle's default state on load
 	if Toggles.MasterToggle and Toggles.MasterToggle.Value then
-		getgenv().FurryHBELoaded = true
+		getgenv().CryptsHBELoaded = true
 	end
 	pcall(updatePlayers)
 	
 	if Library and Library.Notify then
 		Library:Notify("hai :3")
 		-- ESP render path readout (helps diagnose Drawing issues per executor).
-		Library:Notify("ESP draw: " .. (getgenv().FurryHBE_UsingNativeESP and "Native Drawing" or "GUI fallback"))
+		Library:Notify("ESP draw: " .. (getgenv().CryptsHBE_UsingNativeESP and "Native Drawing" or "GUI fallback"))
 		if Library.ToggleKeybind and Library.ToggleKeybind.Value then
 			Library:Notify("Press " .. Library.ToggleKeybind.Value .. " to open the menu")
 		end
@@ -3659,7 +3667,7 @@ pcall(function()
 	local function clearGyro()
 		if activePrimary then
 			pcall(function()
-				local g = activePrimary:FindFirstChild("FurryHBE_StabGyro")
+				local g = activePrimary:FindFirstChild("CryptsHBE_StabGyro")
 				if g then g:Destroy() end
 			end)
 			activePrimary = nil
@@ -3712,11 +3720,11 @@ pcall(function()
 		if (Toggles.vehicleStabilizer == nil) or Toggles.vehicleStabilizer.Value then
 			local up = cf.UpVector
 			local tiltDeg = math.deg(math.acos(math.clamp(up:Dot(Vector3.new(0, 1, 0)), -1, 1)))
-			local gyro = primary:FindFirstChild("FurryHBE_StabGyro")
+			local gyro = primary:FindFirstChild("CryptsHBE_StabGyro")
 			if tiltDeg > 35 then
 				if not gyro then
 					gyro = Instance.new("BodyGyro")
-					gyro.Name = "FurryHBE_StabGyro"
+					gyro.Name = "CryptsHBE_StabGyro"
 					gyro.Parent = primary
 				end
 				gyro.P = 2200          -- light: a nudge, not a clamp
@@ -3728,7 +3736,7 @@ pcall(function()
 				gyro:Destroy()        -- upright enough: stop fighting entirely
 			end
 		else
-			local g = primary:FindFirstChild("FurryHBE_StabGyro")
+			local g = primary:FindFirstChild("CryptsHBE_StabGyro")
 			if g then g:Destroy() end
 		end
 
@@ -4226,8 +4234,8 @@ pcall(function()
 	local function clearStab()
 		if vmStabPart then
 			pcall(function()
-				local ao = vmStabPart:FindFirstChild("FurryHBE_StabAO"); if ao then ao:Destroy() end
-				local att = vmStabPart:FindFirstChild("FurryHBE_StabAtt"); if att then att:Destroy() end
+				local ao = vmStabPart:FindFirstChild("CryptsHBE_StabAO"); if ao then ao:Destroy() end
+				local att = vmStabPart:FindFirstChild("CryptsHBE_StabAtt"); if att then att:Destroy() end
 			end)
 			vmStabPart = nil
 		end
@@ -4235,11 +4243,11 @@ pcall(function()
 	local function applyStab(primary, strength)
 		if vmStabPart and vmStabPart ~= primary then clearStab() end
 		if not (primary and primary.Parent) then return end
-		local att = primary:FindFirstChild("FurryHBE_StabAtt")
-		if not att then att = Instance.new("Attachment"); att.Name = "FurryHBE_StabAtt"; att.Parent = primary end
-		local ao = primary:FindFirstChild("FurryHBE_StabAO")
+		local att = primary:FindFirstChild("CryptsHBE_StabAtt")
+		if not att then att = Instance.new("Attachment"); att.Name = "CryptsHBE_StabAtt"; att.Parent = primary end
+		local ao = primary:FindFirstChild("CryptsHBE_StabAO")
 		if not ao then
-			ao = Instance.new("AlignOrientation"); ao.Name = "FurryHBE_StabAO"
+			ao = Instance.new("AlignOrientation"); ao.Name = "CryptsHBE_StabAO"
 			ao.Mode = Enum.OrientationAlignmentMode.OneAttachment
 			ao.Attachment0 = att; ao.RigidityEnabled = false; ao.Parent = primary
 		end
@@ -4322,7 +4330,7 @@ pcall(function()
 	if not miscTab then return end
 	local lPlayer = Players.LocalPlayer
 	local HttpService = game:GetService("HttpService")
-	local VE_FILE = "FurryHBE_VehicleTypes.json"
+	local VE_FILE = "CryptsHBE_VehicleTypes.json"
 	local TYPE_COLOR = {
 		Car = Color3.fromRGB(255, 255, 255), Helicopter = Color3.fromRGB(0, 255, 255),
 		Boat = Color3.fromRGB(80, 160, 255), Plane = Color3.fromRGB(255, 230, 60),
@@ -4482,7 +4490,7 @@ pcall(function()
 	end
 	local function hideFrom(i) for j = i, #pool do pool[j].Visible = false end end
 
-	RunService:BindToRenderStep("FurryHBE_VehicleESP", Enum.RenderPriority.Camera.Value, function()
+	RunService:BindToRenderStep("CryptsHBE_VehicleESP", Enum.RenderPriority.Camera.Value, function()
 		if not Toggles.vehicleEspEnabled.Value then hideFrom(1); return end
 		local cam = Workspace.CurrentCamera
 		local lchar = lPlayer.Character
@@ -4518,7 +4526,7 @@ pcall(function()
 	end)
 
 	Bridge:RegisterAddon("VehicleESP", { onUnload = function()
-		pcall(function() RunService:UnbindFromRenderStep("FurryHBE_VehicleESP") end)
+		pcall(function() RunService:UnbindFromRenderStep("CryptsHBE_VehicleESP") end)
 		if autoScanConn then pcall(function() autoScanConn:Disconnect() end) end
 		for _, t in ipairs(pool) do safeRemoveDrawing(t) end
 	end })
@@ -4548,7 +4556,7 @@ pcall(function()
 		"Improvements batch 1: per-game settings profiles (auto-save/load by PlaceId), a master PANIC/Reset-All button, global Rainbow ESP with a speed slider, animated chams Glow Pulse, a vehicle anti-fling clamp on the speed jolt, and an on-screen watermark showing tracked-player count and error status. Each was added as an isolated module so it can't affect the core.",
 		"Improvements batch 2: Smart Jitter (smooth sine size-variation) and a Max-Plausible cap for safer extension, ESP line-thickness + distance-fade, Vehicle ESP now shows the driver/occupant name, and the per-game profile now persists every add-on's settings too (unified persistence). Remaining draft items (aim-resolver modes, dropdown search, blurred/animated UI) are game/fork-specific and intentionally left for dedicated passes.",
 		"Adaptive Inf-Ammo resolver: it now tries detection strategies in order (named values, attributes, Configuration folders, player-side values) and falls through until one finds the ammo, caching the winner per gun. If all fail, a learning detector watches the gun and adopts any number that drops when you fire. A label shows which method detected.",
-		"V8 fix + feature pass. ESP now auto-routes Potassium/Solara through the GUI fallback (native Drawing constructs but doesn't render there) so names, 2D boxes and tracers finally show; the fallback overlay was corrected with IgnoreGuiInset and round circles, chams default to a visible red/white instead of invisible black, and Precision no longer freezes the target -- it defaults to extending the Head instead of the HumanoidRootPart (resizing the root is what froze them), sets enlarged parts Massless, and adds target stickiness so the lock stops thrashing between similar-distance players. New Combat tab adds a Weapon Reader (reads the held tool's name/type) and Target Groups (drag-select a box over players to track them with a cyan highlight). Added a Force-Restore-All button for stuck hitboxes; override the ESP path with getgenv().FurryHBE_ForceGuiESP / _ForceNativeESP.",
+		"V8 fix + feature pass. ESP now auto-routes Potassium/Solara through the GUI fallback (native Drawing constructs but doesn't render there) so names, 2D boxes and tracers finally show; the fallback overlay was corrected with IgnoreGuiInset and round circles, chams default to a visible red/white instead of invisible black, and Precision no longer freezes the target -- it defaults to extending the Head instead of the HumanoidRootPart (resizing the root is what froze them), sets enlarged parts Massless, and adds target stickiness so the lock stops thrashing between similar-distance players. New Combat tab adds a Weapon Reader (reads the held tool's name/type) and Target Groups (drag-select a box over players to track them with a cyan highlight). Added a Force-Restore-All button for stuck hitboxes; override the ESP path with getgenv().CryptsHBE_ForceGuiESP / _ForceNativeESP.",
 		"Silent Melee batch on the Combat tab. Left-click (or optional Kill Aura) fires a touch between your weapon's parts -- or your bare fists when no tool is held -- and the chosen target via firetouchinterest, so the game's own .Touched damage handler lands the hit with no hooks. Targets are picked by Closest-to-Crosshair, Closest-in-Range, or your whole Target Group, with melee-only gating, team/whitelist ignores, a melee-reach range limit, and a shiftlock aim ring that turns green on lock. Target Groups also gained an Add-Players-in-Radius button to grab everyone within X studs.",
 		"MELEE-COLLIDE: the Tool Expander gained a Non-Collidable Hitbox option (on by default). The enlarged tool hitbox now keeps CanTouch on (so the game's own touch-damage still lands) while CanCollide is forced off and the part is made Massless, so the bigger hitbox no longer shoves you/objects, snags on the world, or drags your character. Originals (size + collision/touch/mass) are captured per part and fully restored on un-expand, toggle-off and unload.",
 		"MELEE-PEN + Silent Melee confidence pass. Silent Melee gained Wall Penetration (hit through walls, or turn off for a line-of-sight check) and Shield Bypass (skip the target's shield parts so the touch lands on the body), backed by a manual Pick-Shield hold-picker that registers a shield model's name as a fallback shield matcher for every player. Reliability was raised by firing both firetouchinterest AND the weapon's actual Touched connections via getconnections():Fire(target), plus a live readout that detects whether the held weapon is touch-based and confirms when a target's HP actually drops.",
@@ -4566,10 +4574,10 @@ pcall(function()
 		"Tier 5: Collective intelligence. The Calibrate tab gained a per-game profile DB plus community fetch -- point it at any raw-JSON URL (e.g. a GitHub profiles folder) and it pulls <url>/<PlaceId>.json -- with a confidence-scored fallback chain (community -> your local DB -> live scan) that merges and remembers, so a game self-configures instantly next visit.",
 		"Advanced frontier (safe set): a camera Aimbot ballistic resolver (lead by velocity x bullet-travel-time + gravity-drop comp), a team-coloured Radar/minimap rotated to your view, a Movement tab (bunny-hop + infinite jump), teleport Persistence (queue_on_teleport re-inject from a loader URL), and an Auto-Soften director that dials aggressive settings into safe ranges when Phantom Recon detects an anti-cheat. The break-prone/hook frontiers (function hooks, fakelag, actor offload, decompiler, WebSocket C2) were researched and drafted separately, NOT integrated, to keep this build stable.",
 		"Plugin system v1 (compartmentalization). The Bridge gained EnablePlugin/UnloadPlugin + a tracked plugin context (ctx) that auto-disconnects connections, destroys instances/groupboxes and clears control keys on unload, so plugins are true plug-and-play: enable runs a real loadstring and builds the tab on demand, unload frees its memory/connections and drops refs so the code GCs. A Plugins tab manages it, and the first plugin -- Spectate (cycle the camera through players) -- ships as an on-demand module proving the cycle. Existing tabs are untouched and will migrate into plugins one at a time.",
-		"Plugin externalization: the loader now fetches plugins from a Plugin Base URL (your GitHub raw folder, set in the Plugins tab or getgenv().FurryHBE_PluginBase) as <base>/<file>.lua. The Gun Combat block (aimbot/triggerbot/no-recoil), Spectate and the Advanced tab (radar/movement/persistence/auto-soften) were moved OUT into their own files (aimbot.lua, spectate.lua, advanced.lua, precision.lua) and removed from the core (~835 fewer lines). Core helpers getSafeGuiParent + relationshipColor are exposed on the Bridge so external plugins can reuse them.",
-		"Calibrate + Combat fix pass. Chams now default to AlwaysOnTop (see-through-walls wallhack) instead of Occluded. The Weapon Reader reads brand-named guns ('Weston Ranger') by inspecting their internals (Trigger/Barrel/Mag/Sight parts + ammo values) and now shows current/reserve ammo with a HUD-text fallback ('28 | 271'). Auto-Add Character Parts no longer dumps cosmetics/gear/weapon parts into the hitbox list (filtered), tracks exactly what it added, and adds Undo-Auto-Added + Reset-Body-Parts buttons. The scan also detects brand-named guns for Inf-Ammo. Tier-3 Learn now also snapshots HUD number labels so it catches ammo that lives only on-screen. Long scan / Phantom reports are capped on-screen (no more overlap) with Copy/Save-to-file buttons; profiles, the DB and saved reports now all live in a workspace/FurryHBE/ folder and report their exact path. The Plugins tab shows a loaded/total summary and warns on startup that plugins are off.",
+		"Plugin externalization: the loader now fetches plugins from a Plugin Base URL (your GitHub raw folder, set in the Plugins tab or getgenv().CryptsHBE_PluginBase) as <base>/<file>.lua. The Gun Combat block (aimbot/triggerbot/no-recoil), Spectate and the Advanced tab (radar/movement/persistence/auto-soften) were moved OUT into their own files (aimbot.lua, spectate.lua, advanced.lua, precision.lua) and removed from the core (~835 fewer lines). Core helpers getSafeGuiParent + relationshipColor are exposed on the Bridge so external plugins can reuse them.",
+		"Calibrate + Combat fix pass. Chams now default to AlwaysOnTop (see-through-walls wallhack) instead of Occluded. The Weapon Reader reads brand-named guns ('Weston Ranger') by inspecting their internals (Trigger/Barrel/Mag/Sight parts + ammo values) and now shows current/reserve ammo with a HUD-text fallback ('28 | 271'). Auto-Add Character Parts no longer dumps cosmetics/gear/weapon parts into the hitbox list (filtered), tracks exactly what it added, and adds Undo-Auto-Added + Reset-Body-Parts buttons. The scan also detects brand-named guns for Inf-Ammo. Tier-3 Learn now also snapshots HUD number labels so it catches ammo that lives only on-screen. Long scan / Phantom reports are capped on-screen (no more overlap) with Copy/Save-to-file buttons; profiles, the DB and saved reports now all live in a workspace/CryptsHBE/ folder and report their exact path. The Plugins tab shows a loaded/total summary and warns on startup that plugins are off.",
 		"Stability + glitch sweep. Fixed stale ESP artifacts: a player with no torso (respawning) or with Streamer hideESP on now hides EVERY 2D element (name/team/health/box/tracer/off-screen marker/skeleton) -- before, several were left frozen on screen as floating squares/bars. The GUI-fallback renderer now rejects NaN/infinite coordinates and clamps every element's size/offset, so a bad projection can't smear a giant black bar across the top of the screen. Inf-Ammo's player-side scan is scoped to Backpack/leaderstats/Character ONLY (never PlayerGui/PlayerScripts) so it can't scribble the refill amount into the menu's own GUI state and corrupt the tabs. Vehicle Tuning now auto-detects the vehicle you're SITTING in (no manual pick needed) so the speed/handling writes have a target. Added Instant Interact on the Calibrate tab: sets every ProximityPrompt's HoldDuration to 0 (hold-to-interact becomes a tap), with restore-on-off and a live prompt count. Spectate reads the camera live so it survives a respawn. All core + 8 plugins Luau-compiler validated.",
-		"Feature batch: Silent Aim + World + tooling. New SilentAim plugin (hook-free Remote mode that fires the chosen damage remote at the FOV-locked target, plus an opt-in Extreme __namecall-hook mode SCOPED to that one remote that redirects the game's own fire to the target's bone). New World plugin (Fullbright, No Fog, Custom FOV, Infinite Stamina -- all generic client visuals/utility). Vehicle Tuning gained a Speed Boost multiplier (stock top speed x1-5, relative to the captured base). Spectate now RequestStreamAroundAsync's the target's area (and yours on reset) so StreamingEnabled games don't get stuck in 'Gameplay Paused'. The Calibrate tab gained a Weapon Deep-Dump: writes the held weapon's full tree + every Value/attribute + its scripts' read-only string constants + gun-related remotes to workspace/FurryHBE/, the raw data needed to build tailored per-game weapon hacks (inf-ammo/instant-reload/no-recoil/fire-rate) for server-side games where client value-writing can't work.",
+		"Feature batch: Silent Aim + World + tooling. New SilentAim plugin (hook-free Remote mode that fires the chosen damage remote at the FOV-locked target, plus an opt-in Extreme __namecall-hook mode SCOPED to that one remote that redirects the game's own fire to the target's bone). New World plugin (Fullbright, No Fog, Custom FOV, Infinite Stamina -- all generic client visuals/utility). Vehicle Tuning gained a Speed Boost multiplier (stock top speed x1-5, relative to the captured base). Spectate now RequestStreamAroundAsync's the target's area (and yours on reset) so StreamingEnabled games don't get stuck in 'Gameplay Paused'. The Calibrate tab gained a Weapon Deep-Dump: writes the held weapon's full tree + every Value/attribute + its scripts' read-only string constants + gun-related remotes to workspace/CryptsHBE/, the raw data needed to build tailored per-game weapon hacks (inf-ammo/instant-reload/no-recoil/fire-rate) for server-side games where client value-writing can't work.",
 	}
 	local function verNum(i) return 1 + 0.5 * (i - 1) end
 	local function fmtV(n) return "V" .. (n == math.floor(n) and tostring(math.floor(n)) or tostring(n)) end
@@ -4618,10 +4626,10 @@ pcall(function()
 	-- (core + all three modules + no logged errors); YELLOW if core works but a
 	-- module failed to register or errors were logged.
 	local function computeStatus()
-		if not (Library and mainWindow and getgenv().FurryHBE and Toggles.MasterToggle
+		if not (Library and mainWindow and getgenv().CryptsHBE and Toggles.MasterToggle
 			and Toggles.extenderToggled and Options.extenderSize) then return "red" end
 		if type(players) ~= "table" or not runUpdatePlayers then return "red" end
-		local addons = (getgenv().FurryHBE.Addons) or {}
+		local addons = (getgenv().CryptsHBE.Addons) or {}
 		-- Modules are now external plugins (loaded on demand), so they're no longer a
 		-- requirement for the green light: green = core healthy + no logged errors.
 		if #errorLog == 0 then return "green" end
@@ -4651,7 +4659,7 @@ pcall(function()
 	end
 	pcall(function()
 		local tipGui = Instance.new("ScreenGui")
-		tipGui.Name = "FurryHBE_StatusTip"; tipGui.ResetOnSpawn = false
+		tipGui.Name = "CryptsHBE_StatusTip"; tipGui.ResetOnSpawn = false
 		tipGui.DisplayOrder = 999999; tipGui.IgnoreGuiInset = true
 		tipGui.Parent = game:GetService("CoreGui")
 		local tip = Instance.new("TextLabel")
@@ -4686,20 +4694,29 @@ pcall(function()
 	clGroup:AddDropdown("clVersion", { Text = "Version", Values = versionStrings, Default = currentVersion, Multi = false, AllowNull = false, Tooltip = "Pick a version, then click View Changelog. (Default: latest)" })
 	local notesLabel = clGroup:AddLabel("Select a version and click 'View Changelog'.", true)
 	local clShown = false
+	-- Cap the on-screen note: long entries grew the label so tall it pushed the toggle
+	-- button off-screen and you couldn't fold it back up. Full text copies to clipboard.
+	local function capCL(s)
+		local MAX = 360
+		if #s > MAX then return s:sub(1, MAX):gsub("%s+%S*$", "") .. " ... (full text copied to clipboard)" end
+		return s
+	end
 	clGroup:AddButton("View Changelog", function()
 		if clShown then
 			notesLabel:SetText("Select a version and click 'View Changelog'.")  -- fold back up
 			clShown = false
 		else
 			local v = Options.clVersion.Value
-			notesLabel:SetText((v and notesFor[v]) and (v .. ":\n" .. notesFor[v]) or "No notes for that version.")
+			local full = (v and notesFor[v]) or nil
+			if full then pcall(function() if setclipboard then setclipboard(v .. ":\n" .. full) end end) end
+			notesLabel:SetText(full and (v .. ":\n" .. capCL(full)) or "No notes for that version.")
 			clShown = true
 		end
-	end):AddToolTip("Show/hide the changelog for the selected version")
+	end):AddToolTip("Show/hide the changelog for the selected version (full text -> clipboard)")
 
 	-- Live status refresh; the loop exits cleanly when the script unloads.
 	task.spawn(function()
-		while getgenv().FurryHBEInjected do
+		while getgenv().CryptsHBEInjected do
 			task.wait(1)
 			pcall(refreshStatus)
 		end
@@ -4727,7 +4744,7 @@ end)
 -- ===== [Improvement #1] Per-game settings profile (auto-loads per PlaceId) =====
 pcall(function()
 	local HttpService = game:GetService("HttpService")
-	local PG_FILE = "FurryHBE_Game_" .. tostring(game.PlaceId) .. ".json"
+	local PG_FILE = "CryptsHBE_Game_" .. tostring(game.PlaceId) .. ".json"
 	local PG_KEYS = {
 		"MasterToggle","extenderToggled","extenderSize","extenderTransparency","hitboxShape",
 		"partSpecificSizing","headSize","torsoSize","limbSize","dynamicSizing","smoothTransitions",
@@ -4820,7 +4837,7 @@ pcall(function()
 		end
 		pcall(function() if resetAllPlayers then resetAllPlayers() end end)
 		pcall(function() if resetWorldParts then resetWorldParts() end end)
-		local b = getgenv().FurryHBE
+		local b = getgenv().CryptsHBE
 		if b and b.Streamer then
 			b.Streamer.hideESP, b.Streamer.hideChams, b.Streamer.hideFOV, b.Streamer.hideHitbox = false, false, false, false
 		end
@@ -4837,7 +4854,7 @@ pcall(function()
 	end)
 	pcall(function() Library:SetWatermarkVisibility(Toggles.showWatermark.Value) end)
 	task.spawn(function()
-		while getgenv().FurryHBEInjected do
+		while getgenv().CryptsHBEInjected do
 			if Toggles.showWatermark and Toggles.showWatermark.Value then
 				pcall(function()
 					local n = 0
@@ -5068,7 +5085,7 @@ pcall(function()
 	-- matches UserInputService:GetMouseLocation(). WorldToViewportPoint excludes
 	-- the topbar inset, so player points get +inset.Y when hit-testing below.
 	local selGui = Instance.new("ScreenGui")
-	selGui.Name = "FurryHBE_DragSelect"; selGui.ResetOnSpawn = false
+	selGui.Name = "CryptsHBE_DragSelect"; selGui.ResetOnSpawn = false
 	selGui.IgnoreGuiInset = true; selGui.DisplayOrder = 50
 	selGui.Parent = getSafeGuiParent()
 	local selBox = Instance.new("Frame")
@@ -5507,7 +5524,7 @@ pcall(function()
 	local tePart, teOrigSize, teSelBox, teHandles = nil, nil, nil, nil
 	-- Handles need a rendering ScreenGui (PlayerGui is the most reliable parent).
 	local teGui = Instance.new("ScreenGui")
-	teGui.Name = "FurryHBE_ToolEdit"; teGui.ResetOnSpawn = false
+	teGui.Name = "CryptsHBE_ToolEdit"; teGui.ResetOnSpawn = false
 	teGui.Parent = (lPlayer:FindFirstChildOfClass("PlayerGui")) or getSafeGuiParent()
 	local teInfo = teGroup:AddLabel("Editing: none")
 
@@ -5599,17 +5616,27 @@ pcall(function()
 	-- Bottom-of-tab tutorial.
 	local combatHow = combatTab:AddLeftGroupbox("How to Use")
 	combatHow:AddLabel(
-		"WEAPON READER: shows the held gun's name/type/ammo. 'Auto-Read' keeps it live.\n\n" ..
-		"TARGET GROUPS: turn on 'Drag-Select Mode' and drag a box over players to tag them with a\n" ..
-		"  cyan highlight (used by Silent Melee's 'Whole Group' mode). Or 'Add Players in Radius'.\n\n" ..
-		"SILENT MELEE: lands melee hits without swinging at them. Only works on TOUCH-based melee\n" ..
-		"  (the 'Damage:' line confirms it -- 'touch conns' = good, 'remote/raycast' = won't work).\n" ..
-		"  1. Hold a melee (or use bare fists with 'Only Melee Weapons' off).\n" ..
-		"  2. Pick Target Mode (Closest to Crosshair / In Range / Whole Group) + Max Range.\n" ..
-		"  3. Left-click to hit, or turn on 'Auto (Kill Aura)'. Wall Penetration + Shield Bypass\n" ..
-		"     help if hits aren't landing.\n\n" ..
-		"TOOL HITBOX EDITOR: 'Edit Held Weapon' -> drag the green box handles (or X/Y/Z sliders) to\n" ..
-		"  enlarge the tool's damage hitbox. 'Reset to Original' restores it.",
+		"WEAPON READER: shows the held gun's\n" ..
+		"name / type / ammo. 'Auto-Read' keeps\n" ..
+		"it live.\n\n" ..
+		"TARGET GROUPS: turn on 'Drag-Select\n" ..
+		"Mode' and drag a box over players to\n" ..
+		"tag them (cyan). Used by Silent Melee's\n" ..
+		"'Whole Group' mode. Or 'Add in Radius'.\n\n" ..
+		"SILENT MELEE: lands melee hits without\n" ..
+		"swinging. TOUCH-based melee only -- the\n" ..
+		"'Damage:' line confirms ('touch conns'\n" ..
+		"= good, 'remote/raycast' = won't work).\n" ..
+		"  1. Hold a melee (or fists, 'Only\n" ..
+		"     Melee Weapons' off).\n" ..
+		"  2. Pick Target Mode + Max Range.\n" ..
+		"  3. Left-click, or 'Auto (Kill Aura)'.\n" ..
+		"     Wall Penetration + Shield Bypass\n" ..
+		"     help if hits don't land.\n\n" ..
+		"TOOL HITBOX EDITOR: 'Edit Held Weapon'\n" ..
+		"-> drag the green handles (or X/Y/Z\n" ..
+		"sliders) to enlarge the tool's hitbox.\n" ..
+		"'Reset to Original' restores it.",
 		true)
 	print("[Combat] Weapon Reader + Target Groups + Silent Melee registered")
 end)
@@ -5629,7 +5656,7 @@ pcall(function()
 	-- All calibrate output (profiles, the DB, saved reports) goes in ONE folder in the
 	-- executor's workspace so it's easy to find/back up, instead of loose files dumped at
 	-- the root where you can't tell where they went. The path is reported on every save.
-	local OUT_DIR = "FurryHBE"
+	local OUT_DIR = "CryptsHBE"
 	pcall(function() if makefolder and not (isfolder and isfolder(OUT_DIR)) then makefolder(OUT_DIR) end end)
 	local function outPath(name) return OUT_DIR .. "/" .. name end
 	local function saveText(name, text)
@@ -5661,7 +5688,7 @@ pcall(function()
 
 	local reportLabel = reportGroup:AddLabel("Run 'Scan & Extract' to fingerprint this game.", true)
 	-- The on-screen report is capped to fit; the FULL detail goes to clipboard / a file in
-	-- the FurryHBE/ folder so you can read or share long scans without UI overlap.
+	-- the CryptsHBE/ folder so you can read or share long scans without UI overlap.
 	reportGroup:AddButton("Copy Full Report", function()
 		local t = (Bridge.Calibrate and Bridge.Calibrate.reportText) or ""
 		pcall(function() if setclipboard then setclipboard(t) end end)
@@ -5670,7 +5697,7 @@ pcall(function()
 	reportGroup:AddButton("Save Report to File", function()
 		local t = (Bridge.Calibrate and Bridge.Calibrate.reportText) or ""
 		saveText("scan_" .. tostring(game.PlaceId) .. ".txt", t)
-	end):AddToolTip("Write the complete report to workspace/FurryHBE/ in your executor.")
+	end):AddToolTip("Write the complete report to workspace/CryptsHBE/ in your executor.")
 
 	local STD_PARTS = { Head = true, HumanoidRootPart = true, Torso = true, UpperTorso = true, LowerTorso = true,
 		["Left Arm"] = true, ["Right Arm"] = true, ["Left Leg"] = true, ["Right Leg"] = true,
@@ -6051,7 +6078,7 @@ pcall(function()
 			end
 		end)
 		saveText("weapon_dump_" .. tostring(game.PlaceId) .. ".txt", table.concat(lines, "\n"))
-	end):AddToolTip("Write the held weapon's full structure + its scripts' string constants + gun\nremotes to workspace/FurryHBE/ -- the data needed to build tailored weapon hacks.")
+	end):AddToolTip("Write the held weapon's full structure + its scripts' string constants + gun\nremotes to workspace/CryptsHBE/ -- the data needed to build tailored weapon hacks.")
 
 	-- ===== Tier 3: behavioral learning engine ===========================
 	-- Snapshot every numeric value/attribute on you + your character, you perform an
@@ -6389,17 +6416,26 @@ pcall(function()
 	-- Bottom-of-tab tutorial.
 	local calHow = calTab:AddLeftGroupbox("How to Use")
 	calHow:AddLabel(
-		"This tab figures out how a game works so the cheat can adapt to it.\n\n" ..
-		"SCAN & EXTRACT (Tiers 1-2): detects character parts, the framework, guns + shields and\n" ..
-		"  auto-applies them (toggles up top). 'Undo Auto-Added Parts' reverses a bad apply.\n\n" ..
-		"LEARN (Tier 3): finds values WITHOUT names. Snapshot -> do an action (shoot / take\n" ..
-		"  damage / earn) -> Analyze lists what changed. A 'HUD:...' result = display-only =\n" ..
-		"  server-side (can't be written).\n\n" ..
-		"PHANTOM RECON (Tier 4): read-only anti-cheat recon. Then run Tier 5 Auto-Configure.\n\n" ..
-		"DEEP-DUMP HELD WEAPON: hold a gun -> writes its full structure + its scripts' constants\n" ..
-		"  + gun remotes to workspace/FurryHBE/ -- send that file to build a tailored weapon hack.\n\n" ..
-		"INSTANT INTERACT: sets every ProximityPrompt's hold time to 0. All files save to\n" ..
-		"workspace/FurryHBE/.",
+		"Figures out how a game works so the\n" ..
+		"cheat can adapt to it.\n\n" ..
+		"SCAN & EXTRACT (Tiers 1-2): detects\n" ..
+		"parts, framework, guns + shields and\n" ..
+		"auto-applies them. 'Undo Auto-Added\n" ..
+		"Parts' reverses a bad apply.\n\n" ..
+		"LEARN (Tier 3): finds values with no\n" ..
+		"names. Snapshot -> shoot / take damage\n" ..
+		"-> Analyze lists what changed. A\n" ..
+		"'HUD:...' result = display-only =\n" ..
+		"server-side (can't be written).\n\n" ..
+		"PHANTOM RECON (Tier 4): read-only AC\n" ..
+		"recon. Then run Tier 5 Auto-Configure.\n\n" ..
+		"DEEP-DUMP HELD WEAPON: hold a gun ->\n" ..
+		"dumps its full structure + remotes to\n" ..
+		"workspace/CryptsHBE/ -- send me that\n" ..
+		"file for a tailored weapon hack.\n\n" ..
+		"INSTANT INTERACT: ProximityPrompt hold\n" ..
+		"time -> 0. Files save to\n" ..
+		"workspace/CryptsHBE/.",
 		true)
 
 	-- Auto-load a previously-saved profile for this place on startup.
@@ -6417,7 +6453,7 @@ pcall(function()
 	local pmGroup = pmTab:AddLeftGroupbox("Plugin Manager")
 	pmGroup:AddLabel("Enable loads a plugin's tab + features on demand.\nUnload frees its memory/connections and clears its UI.", true)
 
-	-- Base URL for the external plugin files (set here, or via getgenv().FurryHBE_PluginBase
+	-- Base URL for the external plugin files (set here, or via getgenv().CryptsHBE_PluginBase
 	-- before running). Enable fetches <base>/<file>. This is what keeps the core small:
 	-- plugin code lives in separate .lua files, NOT inline.
 	pmGroup:AddInput("pluginBaseUrl", { Text = "Plugin Base URL", Default = Bridge.PluginBase or "", Tooltip = "Raw folder URL holding the plugin .lua files (e.g. a GitHub raw\nfolder). Enable downloads <base>/<file> on demand." })
@@ -6482,7 +6518,7 @@ pcall(function()
 	if Library and Library.OnUnload then
 		Library:OnUnload(function()
 			pcall(cleanup)
-			getgenv().FurryHBEInjected = nil
+			getgenv().CryptsHBEInjected = nil
 		end)
 	end
 end)
@@ -6493,7 +6529,7 @@ end)
 -- working without needing the manual "Fix Missing Players" button, and recovers
 -- automatically from transient errors. Everything is pcall'd so it can't break.
 task.spawn(function()
-	while getgenv().FurryHBEInjected do
+	while getgenv().CryptsHBEInjected do
 		task.wait(3)
 		pcall(function()
 			for _, plr in ipairs(Players:GetPlayers()) do
