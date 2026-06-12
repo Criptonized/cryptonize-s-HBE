@@ -8,7 +8,14 @@ return {
 	name = "InfAmmo", tab = "Inf Ammo", requires = {},
 	load = function(ctx)
 		local miscTab = ctx.tab
-	local AMMO_PAT = { "ammo", "bullet", "mag", "clip", "round", "reserve", "shell", "rocket", "arrow", "grenade", "cartridge", "stockpile" }
+	local AMMO_PAT = { "ammo", "bullet", "mag", "clip", "round", "reserve", "shell", "rocket", "arrow", "grenade", "cartridge", "stockpile", "stored", "spare", "loaded" }
+	-- Numeric value types. CRITICAL: many gun frameworks (TREK, older FE kits) store ammo
+	-- as Double/IntConstrainedValue, NOT IntValue/NumberValue -- scanning only the latter
+	-- is why ammo looked "server-side". Constrained values clamp writes to MaxValue, so
+	-- writing the big Refill Amount just pins them full.
+	local function isNumVal(d)
+		return d:IsA("IntValue") or d:IsA("NumberValue") or d:IsA("DoubleConstrainedValue") or d:IsA("IntConstrainedValue")
+	end
 
 	local g = miscTab:AddRightGroupbox("Inf Ammo / Guns")
 	g:AddToggle("infAmmoEnabled", { Text = "Enable Inf Ammo", Default = false, Tooltip = "Continuously refills numeric ammo values on your equipped gun(s).\nClient-side heuristic; some games keep ammo server-side. (Default: OFF)" })
@@ -68,7 +75,7 @@ return {
 	local function stratValueNames(tool)
 		local out = {}
 		for _, d in ipairs(tool:GetDescendants()) do
-			if (d:IsA("IntValue") or d:IsA("NumberValue")) and isAmmoName(d.Name) then out[#out + 1] = fieldFromValue(d) end
+			if isNumVal(d) and isAmmoName(d.Name) then out[#out + 1] = fieldFromValue(d) end
 		end
 		return out
 	end
@@ -84,7 +91,7 @@ return {
 		for _, d in ipairs(tool:GetDescendants()) do
 			if d:IsA("Configuration") or (typeof(d.Name) == "string" and d.Name:lower():find("config")) then
 				for _, c in ipairs(d:GetChildren()) do
-					if c:IsA("IntValue") or c:IsA("NumberValue") then out[#out + 1] = fieldFromValue(c) end
+					if isNumVal(c) then out[#out + 1] = fieldFromValue(c) end
 				end
 			end
 		end
@@ -103,7 +110,7 @@ return {
 			if root then
 				for _, d in ipairs(root:GetDescendants()) do
 					n = n + 1; if n > 6000 then break end
-					if (d:IsA("IntValue") or d:IsA("NumberValue")) and isAmmoName(d.Name) then out[#out + 1] = fieldFromValue(d) end
+					if isNumVal(d) and isAmmoName(d.Name) then out[#out + 1] = fieldFromValue(d) end
 					pcall(function()
 						for an, av in pairs(d:GetAttributes()) do
 							if type(av) == "number" and isAmmoName(an) then out[#out + 1] = fieldFromAttr(d, an) end
@@ -126,7 +133,7 @@ return {
 		if not snap then
 			snap = {}
 			for _, d in ipairs(tool:GetDescendants()) do
-				if d:IsA("IntValue") or d:IsA("NumberValue") then snap[d] = d.Value end
+				if isNumVal(d) then snap[d] = d.Value end
 			end
 			snapshots[tool] = snap
 			return {}
