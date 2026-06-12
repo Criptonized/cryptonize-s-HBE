@@ -346,6 +346,13 @@ local Camera = Workspace.CurrentCamera
 local WorldToViewportPoint = Camera.WorldToViewportPoint
 local lPlayer = Players.LocalPlayer
 
+-- Treat ALL numeric value types as numbers. Many gun frameworks (TREK, older FE kits)
+-- store ammo/stats as Double/IntConstrainedValue, not IntValue/NumberValue -- scanning
+-- only the latter is why such ammo looked "server-side" and never got detected/written.
+local function isNumericValue(d)
+	return isNumericValue(d) or d:IsA("DoubleConstrainedValue") or d:IsA("IntConstrainedValue")
+end
+
 -- Global tables
 local players = {}
 local entities = {}
@@ -721,6 +728,20 @@ function Bridge:GetOrMakeTab(name)
 	end
 	return self.Tabs[name]
 end
+-- LinoriaLib has no RemoveTab, so unloading a plugin left an empty tab button behind
+-- (groupboxes gone, tab stays). Destroy the tab's underlying Button + Container GUI and
+-- drop the cache so the tab truly pops out on unload and re-creates fresh on re-enable.
+function Bridge:RemoveTab(name)
+	local tab = self.Tabs[name]
+	self.Tabs[name] = nil
+	if type(tab) ~= "table" then return end
+	pcall(function()
+		for _, k in ipairs({ "Button", "TabButton", "Container", "ContainerHolder", "TabFrame", "Holder", "Instance" }) do
+			local inst = rawget(tab, k)
+			if typeof(inst) == "Instance" then inst:Destroy() end
+		end
+	end)
+end
 function Bridge:NewContext(name, tab)
 	local C = { _conns = {}, _insts = {}, _gbs = {}, _keys = {}, tab = tab, Bridge = self }
 	function C:Connect(signal, fn)
@@ -795,8 +816,72 @@ function Bridge:UnloadPlugin(name)
 	if not (entry and entry.loaded) then return end
 	if entry.mod and entry.mod.unload then pcall(entry.mod.unload) end
 	pcall(function() entry.ctx:teardown() end)
+	pcall(function() self:RemoveTab((entry.mod and entry.mod.tab) or name) end)  -- pop the empty tab out
 	self.Plugins[name] = { loaded = false }   -- drop mod + ctx refs so the chunk GCs
 	pcall(collectgarbage)
+end
+
+-- Shared reverse-engineering dump (used by the weapon + vehicle Deep-Dump buttons):
+-- writes a model's full tree -- every child's class/name, every Value's value, every
+-- attribute -- plus the read-only string constants of its scripts (revealing the
+-- value/remote/function names its code uses) and game remotes matching `remoteWords`, to
+-- workspace/CryptsHBE/<fname>. Pure read (getscriptclosure/getconstants); never writes.
+function Bridge:DeepDumpModel(root, title, fname, remoteWords)
+	if not root then if Library then Library:Notify("Nothing to dump") end return end
+	local lines = { "=== " .. title .. " Deep Dump ===", "Root: " .. root.Name .. " (" .. root.ClassName .. ")", "PlaceId: " .. tostring(game.PlaceId), "" }
+	local function dumpConsts(inst, depth)
+		pcall(function()
+			if (inst:IsA("ModuleScript") or inst:IsA("LocalScript") or inst:IsA("Script")) and getscriptclosure and debug and debug.getconstants then
+				local cl = getscriptclosure(inst); if not cl then return end
+				local strs, seen = {}, {}
+				local function harvest(fn)
+					local consts = debug.getconstants(fn)
+					if type(consts) == "table" then
+						for _, c in ipairs(consts) do if type(c) == "string" and #c > 2 and #c < 64 and not seen[c] then seen[c] = true; strs[#strs + 1] = c end end
+					end
+				end
+				harvest(cl)
+				pcall(function() for _, p in ipairs((debug.getprotos and debug.getprotos(cl)) or {}) do harvest(p) end end)
+				if #strs > 0 then lines[#lines + 1] = string.rep("  ", depth + 1) .. "[consts] " .. table.concat(strs, ", ") end
+			end
+		end)
+	end
+	local function dump(inst, depth, cap)
+		if #lines >= cap then return end
+		local indent = string.rep("  ", depth)
+		local extra = ""
+		pcall(function() if inst:IsA("ValueBase") then extra = " = " .. tostring(inst.Value) end end)
+		lines[#lines + 1] = indent .. inst.ClassName .. " '" .. inst.Name .. "'" .. extra
+		pcall(function() for an, av in pairs(inst:GetAttributes()) do lines[#lines + 1] = indent .. "  @" .. an .. " = " .. tostring(av) end end)
+		dumpConsts(inst, depth)
+		for _, c in ipairs(inst:GetChildren()) do
+			if #lines >= cap then lines[#lines + 1] = indent .. "  ...(truncated)"; break end
+			dump(c, depth + 1, cap)
+		end
+	end
+	dump(root, 0, 4000)
+	if type(remoteWords) == "table" then
+		lines[#lines + 1] = ""
+		lines[#lines + 1] = "=== Related Remotes ==="
+		pcall(function()
+			local n = 0
+			for _, d in ipairs(game:GetDescendants()) do
+				if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then
+					local ln = d.Name:lower()
+					for _, w in ipairs(remoteWords) do
+						if ln:find(w) then n = n + 1; if n <= 250 then lines[#lines + 1] = d.ClassName .. " '" .. d.Name .. "'  @ " .. d:GetFullName() end break end
+					end
+					if n > 250 then break end
+				end
+			end
+		end)
+	end
+	local DIR = "CryptsHBE"
+	pcall(function() if makefolder and not (isfolder and isfolder(DIR)) then makefolder(DIR) end end)
+	local path = DIR .. "/" .. fname
+	if not writefile then if Library then Library:Notify("Executor has no writefile") end return end
+	local ok = pcall(function() writefile(path, table.concat(lines, "\n")) end)
+	if Library then Library:Notify(ok and ("Saved -> workspace/" .. path) or ("Save failed: " .. path)) end
 end
 
 getgenv().CryptsHBE = Bridge
@@ -1040,7 +1125,7 @@ hitboxGroupbox:AddButton("Clear Scanned Parts", function()
 	Library:Notify("Cleared " .. #toRemove .. " scanned part(s)")
 end):AddToolTip("Remove every part added via the Part Scanner (keeps the default body parts)")
 hitboxGroupbox:AddSlider("extenderTransparency", { Text = "Transparency", Min = 0, Max = 1, Default = 0.5, Rounding = 2, Tooltip = "Transparency of extended hitboxes (0 = visible, 1 = invisible). (Default: 0.5)" }):OnChanged(updatePlayers)
-hitboxGroupbox:AddToggle("outlineMode", { Text = "Outline Only", Default = false, Tooltip = "Leave the body looking normal and put the enlarged hit\narea on a SEPARATE invisible part, drawn as a clean outline\nin your outline colour (shaped like the expanded part).\nThe hit area still works for hit-reg.\n(Default: OFF)" }):OnChanged(updatePlayers)
+hitboxGroupbox:AddToggle("outlineMode", { Text = "Outline Only", Default = false, Tooltip = "Show the enlarged hitbox as a clean wireframe outline\ninstead of a solid block. The real part stays enlarged (so\nhit-reg still works) but is made invisible, with a SelectionBox\noutline in your outline colour. (Default: OFF)" }):OnChanged(updatePlayers)
 hitboxGroupbox:AddLabel("Outline Color"):AddColorPicker("outlineColor", { Title = "Outline Color", Default = Color3.fromRGB(255, 0, 0) })
 hitboxGroupbox:AddSlider("outlineTransparency", { Text = "Outline Transparency", Min = 0, Max = 1, Default = 0, Rounding = 2, Tooltip = "Transparency of the outline lines (0 = solid). (Default: 0)" }):OnChanged(updatePlayers)
 hitboxGroupbox:AddInput("customPartName", { Text = "Custom Part Name", Default = "HeadHB", Tooltip = "Name for custom body part matching. (Default: HeadHB)" }):OnChanged(updatePlayers)
@@ -2538,59 +2623,37 @@ function addPlayer(player)
 			if oldSel then oldSel:Destroy() end
 
 			if Toggles.outlineMode and Toggles.outlineMode.Value then
-				-- Outline Only (reworked, F6): leave the REAL part in its original visible
-				-- state and move the enlarged hit area onto a SEPARATE invisible part
-				-- welded to it, outlined by a Highlight -- a clean outline shaped like the
-				-- expanded part, instead of hiding the body behind a big transparent box.
-				part.Size = d.Size
-				part.Transparency = d.Transparency
-				part.Massless = d.Massless
-				part.CanCollide = d.CanCollide
-				currentSizes[part] = d.Size
+				-- Outline Only: keep the REAL part ENLARGED (it's already sized to targetSize
+				-- above) so the game's hit detection still recognises it. The previous version
+				-- reset the part to its original size and put the big hitbox on a SEPARATE proxy
+				-- part -- but games check the actual body part / character, not an extra welded
+				-- part, so HB stopped registering. Now we just make the enlarged part invisible
+				-- and trace it with a SelectionBox: a clean outline of the real hit area.
+				part.Transparency = 1
 				if part.Name == "Head" then
 					local face = part:FindFirstChild("face")
-					if face then face.Transparency = d.Transparency end
+					if face then face.Transparency = 1 end
 				end
-
-				local proxy = part:FindFirstChild("CryptsHBE_HitProxy")
-				if not proxy then
-					proxy = Instance.new("Part")
-					proxy.Name = "CryptsHBE_HitProxy"
-					proxy.Transparency = 1
-					proxy.Massless = true
-					proxy.CanCollide = false
-					proxy.CanTouch = true
-					proxy.CanQuery = true
-					proxy.Anchored = false
-					proxy.Size = targetSize
-					proxy.CFrame = part.CFrame
-					proxy.Parent = part
-					local weld = Instance.new("WeldConstraint")
-					weld.Part0 = part
-					weld.Part1 = proxy
-					weld.Parent = proxy
-					-- A SelectionBox draws a wireframe box around the (invisible) hit proxy.
-					-- Unlike a Highlight, it renders even though the proxy is Transparency=1
-					-- (a Highlight needs visible geometry to outline -- that's why the old
-					-- outline never showed). LineThickness is in studs; it's always-on-top.
-					local sb = Instance.new("SelectionBox")
+				-- Drop any proxy left by the older (broken) implementation.
+				local oldProxy = part:FindFirstChild("CryptsHBE_HitProxy")
+				if oldProxy then oldProxy:Destroy() end
+				local sb = part:FindFirstChild("CryptsHBE_OutlineSB")
+				if not sb then
+					sb = Instance.new("SelectionBox")
 					sb.Name = "CryptsHBE_OutlineSB"
-					sb.Adornee = proxy
+					sb.Adornee = part
 					sb.SurfaceTransparency = 1
 					sb.LineThickness = 0.05
-					sb.Parent = proxy
+					sb.Parent = part
 				end
-				proxy.Size = targetSize
-				proxy.CanCollide = Toggles.collisionsToggled.Value
-				local sb = proxy:FindFirstChild("CryptsHBE_OutlineSB")
-				if sb then
-					sb.Color3 = (Options.outlineColor and Options.outlineColor.Value) or Color3.fromRGB(255, 0, 0)
-					sb.Transparency = (Options.outlineTransparency and Options.outlineTransparency.Value) or 0
-					sb.SurfaceTransparency = 1
-				end
+				sb.Color3 = (Options.outlineColor and Options.outlineColor.Value) or Color3.fromRGB(255, 0, 0)
+				sb.Transparency = (Options.outlineTransparency and Options.outlineTransparency.Value) or 0
+				sb.SurfaceTransparency = 1
 			else
-				-- Normal extend: drop any outline proxy; the real part stays enlarged
-				-- (sized/Massless/CanCollide already applied above).
+				-- Normal extend: drop the outline SelectionBox + any old proxy; the real part
+				-- stays enlarged + visible (sized/Massless/CanCollide already applied above).
+				local sb = part:FindFirstChild("CryptsHBE_OutlineSB")
+				if sb then sb:Destroy() end
 				local proxy = part:FindFirstChild("CryptsHBE_HitProxy")
 				if proxy then proxy:Destroy() end
 				part.Transparency = extTransparency
@@ -2610,6 +2673,8 @@ function addPlayer(player)
 			if ob then ob:Destroy() end
 			local px = part:FindFirstChild("CryptsHBE_HitProxy")
 			if px then px:Destroy() end
+			local osb = part:FindFirstChild("CryptsHBE_OutlineSB")
+			if osb then osb:Destroy() end
 
 			if part.Name == "Head" then
 				local face = part:FindFirstChild("face")
@@ -2655,6 +2720,8 @@ function addPlayer(player)
 					if ob then ob:Destroy() end
 					local px = v:FindFirstChild("CryptsHBE_HitProxy")
 					if px then px:Destroy() end
+					local osb = v:FindFirstChild("CryptsHBE_OutlineSB")
+					if osb then osb:Destroy() end
 					if v.Name == "Head" then
 						local face = v:FindFirstChild("face")
 						if face then
@@ -4189,7 +4256,7 @@ pcall(function()
 		local m = pickedModel()
 		if not m then pcall(function() vmInfo:SetText("Detected: none -- sit in a vehicle or hold-pick one") end); return end
 		for _, d in ipairs(m:GetDescendants()) do
-			if d:IsA("NumberValue") or d:IsA("IntValue") then
+			if isNumericValue(d) then
 				local b = classifyVal(d.Name); if b then table.insert(vmB[b], fieldVal(d)) end
 			elseif d:IsA("VehicleSeat") then vmSeats[#vmSeats + 1] = d
 				elseif d:IsA("ModuleScript") and (d.Name == "Tune" or d.Name:lower():find("chassis")) then
@@ -4219,6 +4286,12 @@ pcall(function()
 		pcall(function() vmInfo:SetText(("%sGas:%d HP:%d Spd:%d Trq:%d Turn:%d Seats:%d"):format(vmIsAChassis and "[A-Chassis] " or "", #vmB.gas, #vmB.health, #vmB.speed, #vmB.torque, #vmB.turn, #vmSeats)) end)
 	end
 	vmGroup:AddButton("Detect Values", detectVehMod):AddToolTip("Scan the picked vehicle for fuel/health/speed/handling values to modify.")
+	vmGroup:AddButton("Deep-Dump Picked Vehicle", function()
+		local m = pickedModel()
+		if not m then Library:Notify("Sit in a vehicle or hold-pick one first"); return end
+		Bridge:DeepDumpModel(m, "Vehicle", "vehicle_dump_" .. tostring(game.PlaceId) .. ".txt",
+			{ "speed", "velocity", "throttle", "torque", "power", "engine", "drive", "rpm", "gear", "accel", "chassis", "vehicle", "car", "fuel", "gas" })
+	end):AddToolTip("Write the picked/seated vehicle's full structure + its scripts' constants +\nvehicle remotes to workspace/CryptsHBE/ -- the data to find the real speed governor.")
 
 	local function holdMax(list)
 		for _, f in ipairs(list) do
@@ -4935,7 +5008,7 @@ pcall(function()
 		local hit = false
 		pcall(function()
 			for _, d in ipairs(tool:GetDescendants()) do
-				if d:IsA("IntValue") or d:IsA("NumberValue") then
+				if isNumericValue(d) then
 					local ln = d.Name:lower()
 					for _, w in ipairs(WR_AMMO_WORDS) do if ln:find(w, 1, true) then hit = true; return end end
 				end
@@ -4973,7 +5046,7 @@ pcall(function()
 	-- Read a numeric stat (Value or attribute) whose name matches any keyword.
 	local function findStat(tool, words)
 		for _, d in ipairs(tool:GetDescendants()) do
-			if d:IsA("NumberValue") or d:IsA("IntValue") then
+			if isNumericValue(d) then
 				local n = d.Name:lower()
 				for _, w in ipairs(words) do if n:find(w) then return d.Value end end
 			end
@@ -5002,7 +5075,7 @@ pcall(function()
 		local cur, reserve
 		pcall(function()
 			for _, d in ipairs(tool:GetDescendants()) do
-				if d:IsA("IntValue") or d:IsA("NumberValue") then cur, reserve = bucketAmmo(d.Name:lower(), d.Value, cur, reserve) end
+				if isNumericValue(d) then cur, reserve = bucketAmmo(d.Name:lower(), d.Value, cur, reserve) end
 			end
 		end)
 		pcall(function()
@@ -5839,7 +5912,7 @@ pcall(function()
 					if t:IsA("Tool") then
 						local isGun = nameHas(t.Name, GUN_WORDS)
 						for _, d in ipairs(t:GetDescendants()) do
-							if (d:IsA("IntValue") or d:IsA("NumberValue")) and nameHas(d.Name, AMMO_WORDS) then ammoVals = ammoVals + 1; isGun = true end
+							if (isNumericValue(d)) and nameHas(d.Name, AMMO_WORDS) then ammoVals = ammoVals + 1; isGun = true end
 							if not isGun and nameHas(d.Name, GUN_PARTS) then isGun = true end
 						end
 						if isGun then guns[t.Name] = true end
@@ -5912,7 +5985,7 @@ pcall(function()
 			if tool then
 				isGun = nameHas(tool.Name, GUN_WORDS)
 				for _, d in ipairs(tool:GetDescendants()) do
-					if d:IsA("NumberValue") or d:IsA("IntValue") then
+					if isNumericValue(d) then
 						local n = d.Name:lower()
 						for _, w in ipairs({ "recoil", "spread", "kick", "bloom", "sway" }) do if n:find(w) then recoilN = recoilN + 1; break end end
 						if nameHas(d.Name, AMMO_WORDS) then isGun = true end
@@ -6098,7 +6171,7 @@ pcall(function()
 				local n = 0
 				for _, d in ipairs(root:GetDescendants()) do
 					n = n + 1; if n > 40000 then break end
-					if d:IsA("NumberValue") or d:IsA("IntValue") then
+					if isNumericValue(d) then
 						fields[#fields + 1] = { label = d.Name, get = function() return d.Value end }
 					else
 						pcall(function()
