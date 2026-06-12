@@ -27,7 +27,7 @@ local function fieldsFor(tool, words)
 	if not tool then return out end
 	pcall(function()
 		for _, d in ipairs(tool:GetDescendants()) do
-			if d:IsA("NumberValue") or d:IsA("IntValue") then
+			if d:IsA("NumberValue") or d:IsA("IntValue") or d:IsA("DoubleConstrainedValue") or d:IsA("IntConstrainedValue") then
 				if nameHas(d.Name, words) then out[#out + 1] = { orig = d.Value, set = function(v) pcall(function() d.Value = v end) end } end
 			end
 			pcall(function()
