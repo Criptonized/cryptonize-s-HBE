@@ -846,6 +846,20 @@ function Bridge:DeepDumpModel(root, title, fname, remoteWords)
 			end
 		end)
 	end
+	-- Physics props worth seeing on constraints / body-movers / vehicle seats: these are
+	-- what actually governs speed on constraint-driven vehicles (no speed Value exists).
+	local PHYS_PROPS = { "ActuatorType", "MotorMaxTorque", "MotorMaxAngularAcceleration", "MotorMaxAcceleration",
+		"AngularVelocity", "TargetAngle", "MaxSpeed", "Torque", "TurnSpeed", "Stiffness", "Damping", "FreeLength",
+		"Velocity", "VectorVelocity", "MaxForce", "Force", "Responsiveness" }
+	local function dumpPhys(inst, depth)
+		if not (inst:IsA("Constraint") or inst:IsA("BodyMover") or inst:IsA("VehicleSeat")) then return end
+		local got = {}
+		for _, p in ipairs(PHYS_PROPS) do
+			local ok, v = pcall(function() return inst[p] end)
+			if ok and v ~= nil then got[#got + 1] = p .. "=" .. tostring(v) end
+		end
+		if #got > 0 then lines[#lines + 1] = string.rep("  ", depth + 1) .. ". " .. table.concat(got, "  ") end
+	end
 	local function dump(inst, depth, cap)
 		if #lines >= cap then return end
 		local indent = string.rep("  ", depth)
@@ -853,6 +867,7 @@ function Bridge:DeepDumpModel(root, title, fname, remoteWords)
 		pcall(function() if inst:IsA("ValueBase") then extra = " = " .. tostring(inst.Value) end end)
 		lines[#lines + 1] = indent .. inst.ClassName .. " '" .. inst.Name .. "'" .. extra
 		pcall(function() for an, av in pairs(inst:GetAttributes()) do lines[#lines + 1] = indent .. "  @" .. an .. " = " .. tostring(av) end end)
+		pcall(dumpPhys, inst, depth)
 		dumpConsts(inst, depth)
 		for _, c in ipairs(inst:GetChildren()) do
 			if #lines >= cap then lines[#lines + 1] = indent .. "  ...(truncated)"; break end
@@ -4186,6 +4201,7 @@ pcall(function()
 	vmGroup:AddSlider("vmTopSpeed",   { Text = "Top Speed", Min = 10, Max = 1000, Default = 200, Rounding = 0, Tooltip = "Value written when Set Top Speed is on. (Default: 200)" })
 	vmGroup:AddToggle("vmSpeedMult",  { Text = "Speed Boost (multiplier)", Default = false, Tooltip = "Multiply the vehicle's ORIGINAL top speed by the factor below\n(relative to stock, captured on detect -- doesn't compound). (Default: OFF)" })
 	vmGroup:AddSlider("vmSpeedMultX", { Text = "Speed Multiplier", Min = 1, Max = 5, Default = 2, Rounding = 1, Tooltip = "e.g. 5 = five times the stock top speed. (Default: 2)" })
+	vmGroup:AddToggle("vehWheelBoost", { Text = "Wheel Motor Boost (physics)", Default = false, Tooltip = "For vehicles with NO speed value (driven by Cylindrical/Hinge\nwheel motors -- see the Physics readout). Scales the motors'\nAngularVelocity by the multiplier and raises their torque so\nthey can actually reach it. EXPERIMENTAL; needs network\nownership to stick. (Default: OFF)" })
 	-- Handling panel (screenshot-style). Writes to the detected VehicleSeat + any
 	-- matching tune NumberValues/attributes on the vehicle YOU drive (you own its
 	-- network, so the writes replicate). Auto-detected when you pick a vehicle.
@@ -4202,7 +4218,7 @@ pcall(function()
 	-- Live confidence readout: are your writes even going to stick? Shows whether
 	-- YOU own the vehicle's network (writes replicate) vs the server, and whether a
 	-- written value actually held (server didn't revert it).
-	local vmStatus = vmGroup:AddLabel("Owner: -")
+	local vmStatus = vmGroup:AddLabel("Owner: -", true)
 
 	local GAS_WORDS       = { "fuel", "gas", "gasoline", "petrol", "diesel" }
 	local HEALTH_WORDS    = { "health", "durability", "integrity", "hp" }
@@ -4249,16 +4265,31 @@ pcall(function()
 	local vmB = { gas = {}, health = {}, speed = {}, torque = {}, turn = {}, steer = {}, turnaccel = {} }
 	local vmSeats, vmMaxSeen, vmIsAChassis = {}, {}, false
 	local vmSpeedBase = {}  -- [seat or speed-field] = stock top speed, captured on detect (so the multiplier is relative to stock, not compounding)
+	-- Physics drive: many vehicles (TREK, constraint chassis) have NO speed Value -- they
+	-- move via CylindricalConstraint/HingeConstraint wheel motors, so MaxSpeed writes do
+	-- nothing. Detect those + suspension/body-movers so we can report the real drive system
+	-- and boost the motors (the actual top-speed lever).
+	local vmMotors, vmMotorBase = {}, {}   -- driven Cylindrical/Hinge constraints + their stock MotorMaxTorque
+	local vmPhysics = { cyl = 0, hinge = 0, spring = 0, mover = 0 }
 	local function detectVehMod()
 		vmB = { gas = {}, health = {}, speed = {}, torque = {}, turn = {}, steer = {}, turnaccel = {} }
 		vmSeats, vmMaxSeen, vmIsAChassis = {}, {}, false
-		vmSpeedBase = {}
+		vmSpeedBase = {}; vmMotors, vmMotorBase = {}, {}
+		vmPhysics = { cyl = 0, hinge = 0, spring = 0, mover = 0 }
 		local m = pickedModel()
 		if not m then pcall(function() vmInfo:SetText("Detected: none -- sit in a vehicle or hold-pick one") end); return end
 		for _, d in ipairs(m:GetDescendants()) do
 			if isNumericValue(d) then
 				local b = classifyVal(d.Name); if b then table.insert(vmB[b], fieldVal(d)) end
 			elseif d:IsA("VehicleSeat") then vmSeats[#vmSeats + 1] = d
+			elseif d:IsA("CylindricalConstraint") then
+				vmPhysics.cyl = vmPhysics.cyl + 1
+				vmMotors[#vmMotors + 1] = d; pcall(function() vmMotorBase[d] = d.MotorMaxTorque end)
+			elseif d:IsA("HingeConstraint") then
+				vmPhysics.hinge = vmPhysics.hinge + 1
+				if d.ActuatorType == Enum.ActuatorType.Motor then vmMotors[#vmMotors + 1] = d; pcall(function() vmMotorBase[d] = d.MotorMaxTorque end) end
+			elseif d:IsA("SpringConstraint") then vmPhysics.spring = vmPhysics.spring + 1
+			elseif d:IsA("BodyVelocity") or d:IsA("LinearVelocity") or d:IsA("VectorForce") or d:IsA("BodyThrust") then vmPhysics.mover = vmPhysics.mover + 1
 				elseif d:IsA("ModuleScript") and (d.Name == "Tune" or d.Name:lower():find("chassis")) then
 					-- A-Chassis: require the (pure-data) Tune module and expose numeric keys
 					-- as writable fields so the handling sliders can drive its tune.
@@ -4283,7 +4314,16 @@ pcall(function()
 		-- Capture stock top speed (seats + detected speed fields) for the multiplier.
 		for _, s in ipairs(vmSeats) do pcall(function() vmSpeedBase[s] = s.MaxSpeed end) end
 		for _, f in ipairs(vmB.speed) do pcall(function() local v = f.read(); if type(v) == "number" then vmSpeedBase[f] = v end end) end
-		pcall(function() vmInfo:SetText(("%sGas:%d HP:%d Spd:%d Trq:%d Turn:%d Seats:%d"):format(vmIsAChassis and "[A-Chassis] " or "", #vmB.gas, #vmB.health, #vmB.speed, #vmB.torque, #vmB.turn, #vmSeats)) end)
+		-- Diagnose how the vehicle actually moves so you know which control will work.
+		local drive
+		if #vmB.speed > 0 or #vmSeats > 0 then drive = "value/seat-based -> Set Top Speed works"
+		elseif #vmMotors > 0 then drive = "PHYSICS (wheel motors) -> use Wheel Motor Boost"
+		elseif vmPhysics.mover > 0 then drive = "force-based (body movers) -> writes may not stick"
+		else drive = "unknown" end
+		pcall(function() vmInfo:SetText(
+			("%sGas:%d HP:%d Spd:%d Trq:%d Turn:%d Seats:%d\nPhysics: %d motors, %d springs, %d movers\nDrive: %s"):format(
+				vmIsAChassis and "[A-Chassis] " or "", #vmB.gas, #vmB.health, #vmB.speed, #vmB.torque, #vmB.turn, #vmSeats,
+				#vmMotors, vmPhysics.spring, vmPhysics.mover, drive)) end)
 	end
 	vmGroup:AddButton("Detect Values", detectVehMod):AddToolTip("Scan the picked vehicle for fuel/health/speed/handling values to modify.")
 	vmGroup:AddButton("Deep-Dump Picked Vehicle", function()
@@ -4333,7 +4373,7 @@ pcall(function()
 		vmStabPart = primary
 	end
 
-	local vmLastModel, vmStatusT = nil, 0
+	local vmLastModel, vmStatusT, vmWheelWasOn = nil, 0, false
 	local vmConn = RunService.Heartbeat:Connect(function()
 		local m = pickedModel()
 		if m ~= vmLastModel then vmLastModel = m; clearStab(); detectVehMod() end  -- auto re-detect + restabilise on new pick
@@ -4350,6 +4390,22 @@ pcall(function()
 			local x = Options.vmSpeedMultX.Value
 			for _, s in ipairs(vmSeats) do if s.Parent and vmSpeedBase[s] then pcall(function() s.MaxSpeed = vmSpeedBase[s] * x end) end end
 			for _, f in ipairs(vmB.speed) do if vmSpeedBase[f] then pcall(function() f.write(vmSpeedBase[f] * x) end) end end
+		end
+		-- Wheel Motor Boost: scale physics wheel-motor spin (no speed value exists). Live-
+		-- multiply AngularVelocity (clamped, sign-preserving so direction holds) and raise
+		-- MotorMaxTorque so the wheels can reach the higher spin. Restores torque on off.
+		if Toggles.vehWheelBoost and Toggles.vehWheelBoost.Value then
+			vmWheelWasOn = true
+			local x = Options.vmSpeedMultX.Value
+			for _, c in ipairs(vmMotors) do
+				if c.Parent then pcall(function()
+					c.MotorMaxTorque = math.max(vmMotorBase[c] or 0, (vmMotorBase[c] or 0) * x, 100000)
+					c.AngularVelocity = math.clamp(c.AngularVelocity * x, -1000, 1000)
+				end) end
+			end
+		elseif vmWheelWasOn then
+			vmWheelWasOn = false
+			for _, c in ipairs(vmMotors) do if c.Parent and vmMotorBase[c] then pcall(function() c.MotorMaxTorque = vmMotorBase[c] end) end end
 		end
 		-- Handling panel (screenshot-style).
 		if Toggles.vehBoost and Toggles.vehBoost.Value then
@@ -4382,7 +4438,17 @@ pcall(function()
 				local ok2, ms = pcall(function() return vmSeats[1].MaxSpeed end)
 				if ok2 then applied = (math.abs((ms or 0) - Options.vehTargetSpeed.Value) < 1.5) and "  | speed applied OK" or "  | speed REVERTED" end
 			end
-			pcall(function() vmStatus:SetText("Owner: " .. own .. applied) end)
+			-- Live ACTUAL speed (assembly velocity) so you can see what it really does at
+			-- speed -- and, for physics vehicles, the wheel motors' current target spin.
+			local spd = 0
+			if prim then pcall(function() spd = prim.AssemblyLinearVelocity.Magnitude end) end
+			local motorTxt = ""
+			if #vmMotors > 0 then
+				local av = 0
+				pcall(function() av = math.abs(vmMotors[1].AngularVelocity) end)
+				motorTxt = ("  | wheel spin %.0f"):format(av)
+			end
+			pcall(function() vmStatus:SetText(("Owner: %s%s\nActual speed: %.0f sps%s"):format(own, applied, spd, motorTxt)) end)
 		end
 	end)
 
@@ -4651,6 +4717,7 @@ pcall(function()
 		"Calibrate + Combat fix pass. Chams now default to AlwaysOnTop (see-through-walls wallhack) instead of Occluded. The Weapon Reader reads brand-named guns ('Weston Ranger') by inspecting their internals (Trigger/Barrel/Mag/Sight parts + ammo values) and now shows current/reserve ammo with a HUD-text fallback ('28 | 271'). Auto-Add Character Parts no longer dumps cosmetics/gear/weapon parts into the hitbox list (filtered), tracks exactly what it added, and adds Undo-Auto-Added + Reset-Body-Parts buttons. The scan also detects brand-named guns for Inf-Ammo. Tier-3 Learn now also snapshots HUD number labels so it catches ammo that lives only on-screen. Long scan / Phantom reports are capped on-screen (no more overlap) with Copy/Save-to-file buttons; profiles, the DB and saved reports now all live in a workspace/CryptsHBE/ folder and report their exact path. The Plugins tab shows a loaded/total summary and warns on startup that plugins are off.",
 		"Stability + glitch sweep. Fixed stale ESP artifacts: a player with no torso (respawning) or with Streamer hideESP on now hides EVERY 2D element (name/team/health/box/tracer/off-screen marker/skeleton) -- before, several were left frozen on screen as floating squares/bars. The GUI-fallback renderer now rejects NaN/infinite coordinates and clamps every element's size/offset, so a bad projection can't smear a giant black bar across the top of the screen. Inf-Ammo's player-side scan is scoped to Backpack/leaderstats/Character ONLY (never PlayerGui/PlayerScripts) so it can't scribble the refill amount into the menu's own GUI state and corrupt the tabs. Vehicle Tuning now auto-detects the vehicle you're SITTING in (no manual pick needed) so the speed/handling writes have a target. Added Instant Interact on the Calibrate tab: sets every ProximityPrompt's HoldDuration to 0 (hold-to-interact becomes a tap), with restore-on-off and a live prompt count. Spectate reads the camera live so it survives a respawn. All core + 8 plugins Luau-compiler validated.",
 		"Feature batch: Silent Aim + World + tooling. New SilentAim plugin (hook-free Remote mode that fires the chosen damage remote at the FOV-locked target, plus an opt-in Extreme __namecall-hook mode SCOPED to that one remote that redirects the game's own fire to the target's bone). New World plugin (Fullbright, No Fog, Custom FOV, Infinite Stamina -- all generic client visuals/utility). Vehicle Tuning gained a Speed Boost multiplier (stock top speed x1-5, relative to the captured base). Spectate now RequestStreamAroundAsync's the target's area (and yours on reset) so StreamingEnabled games don't get stuck in 'Gameplay Paused'. The Calibrate tab gained a Weapon Deep-Dump: writes the held weapon's full tree + every Value/attribute + its scripts' read-only string constants + gun-related remotes to workspace/CryptsHBE/, the raw data needed to build tailored per-game weapon hacks (inf-ammo/instant-reload/no-recoil/fire-rate) for server-side games where client value-writing can't work.",
+		"Constrained-value + vehicle-physics pass. The whole script now treats Double/IntConstrainedValue as numeric (a TREK-style game stored ammo as DoubleConstrainedValue, so it was invisible to every scan -> inf-ammo now works). Inf-Ammo re-detects when its cached ammo objects get replaced (respawn re-creates the gun's value folder), fixing 'stops working after reset'. Outline Only now keeps the REAL part enlarged + invisible with a SelectionBox outline (the old proxy part wasn't recognised for hit-reg). Plugin unload now removes the empty tab (Bridge:RemoveTab). Vehicle Tuning gained physics detection: it counts Cylindrical/Hinge wheel motors, springs and body-movers, diagnoses the drive type, shows live actual speed + wheel spin, and adds a Wheel Motor Boost for constraint-driven vehicles with no speed value. Deep-Dump (weapon + new Picked-Vehicle button) now also prints constraint/body-mover physics props. The menu window is wider (720) so labels stop clipping; the changelog viewer is capped + copies full text to clipboard.",
 	}
 	local function verNum(i) return 1 + 0.5 * (i - 1) end
 	local function fmtV(n) return "V" .. (n == math.floor(n) and tostring(math.floor(n)) or tostring(n)) end
@@ -4838,7 +4905,7 @@ pcall(function()
 		"toolExpanderEnabled","toolExpandSize","toolAutoApply","toolAutoScanEquip","toolNonCollide",
 		"infAmmoEnabled","infAmmoAllTools","infAmmoAmount","infAmmoManualName",
 		"vehicleEspEnabled","vehicleEspAutoTrack","vehicleEspWheelCars","mvHbeEnabled","mvHbeSize","mvHbeTransparency","mvHbeCollisions","mvHbeWholeModel",
-		"vmInfGas","vmFullHealth","vmSetSpeed","vmTopSpeed","vmSpeedMult","vmSpeedMultX",
+		"vmInfGas","vmFullHealth","vmSetSpeed","vmTopSpeed","vmSpeedMult","vmSpeedMultX","vehWheelBoost",
 		"vehBoost","vehTargetSpeed","vehAccel","vehTurnRate","vehTurnAngle","vehTurnAccel","vehStability","vehStabilityStrength","vehKeepOwnership",
 		"streamerMaster","hideFOVCircle","hidePlayerESP","hideChams","hideHitboxGlow",
 		"weaponReaderAuto","groupRadius",
@@ -4901,7 +4968,7 @@ pcall(function()
 			"vehicleSpeedLimiter", "vehicleStabilizer", "outlineMode", "espNameToggled", "espHighlightToggled",
 			"espBoxToggled", "espTracerToggled", "espSkeletonToggled", "fovFilterToggled",
 			"dragSelectMode", "silentMeleeEnabled", "silentMeleeAura",
-			"vmInfGas", "vmFullHealth", "vmSetSpeed", "vehBoost", "vehStability", "rrAuto",
+			"vmInfGas", "vmFullHealth", "vmSetSpeed", "vmSpeedMult", "vehWheelBoost", "vehBoost", "vehStability", "rrAuto",
 			"aimbotEnabled", "triggerEnabled", "norecoilEnabled", "bhopEnabled", "infJumpEnabled",
 			"instantInteract", "vmSpeedMult", "fullbright", "noFog", "customFovEnabled", "infStamina",
 			"saEnabled", "saHook", "weaponNoRecoil", "weaponNoDrop", "weaponInstantReload", "weaponFireRate",
