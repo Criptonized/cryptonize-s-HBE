@@ -91,18 +91,26 @@ return {
 		return out
 	end
 	-- Player-side: covers ammo kept OUTSIDE the gun -- separate inventory items like
-	-- "5.56 Ammo", reserve counts in the Backpack, leaderstats, PlayerGui, etc.
-	-- Scans both NumberValue/IntValue names AND numeric attributes anywhere on the
-	-- player so games that store ammo as an attribute are handled too.
+	-- "5.56 Ammo", reserve counts in the Backpack, leaderstats. SCOPED to safe containers
+	-- ONLY (Backpack / leaderstats / Character) -- NEVER PlayerGui or PlayerScripts. The
+	-- old version scanned all of lPlayer and force-wrote the refill amount into anything
+	-- ammo-named, which on executors where gethui() falls back to PlayerGui meant it
+	-- scribbled into the menu's own GUI state and corrupted the tabs. Bounded, too.
 	local function stratPlayerSide(_)
-		local out = {}
-		for _, d in ipairs(lPlayer:GetDescendants()) do
-			if (d:IsA("IntValue") or d:IsA("NumberValue")) and isAmmoName(d.Name) then out[#out + 1] = fieldFromValue(d) end
-			pcall(function()
-				for an, av in pairs(d:GetAttributes()) do
-					if type(av) == "number" and isAmmoName(an) then out[#out + 1] = fieldFromAttr(d, an) end
+		local out, n = {}, 0
+		local roots = { lPlayer:FindFirstChild("Backpack"), lPlayer:FindFirstChild("leaderstats"), lPlayer.Character }
+		for _, root in ipairs(roots) do
+			if root then
+				for _, d in ipairs(root:GetDescendants()) do
+					n = n + 1; if n > 6000 then break end
+					if (d:IsA("IntValue") or d:IsA("NumberValue")) and isAmmoName(d.Name) then out[#out + 1] = fieldFromValue(d) end
+					pcall(function()
+						for an, av in pairs(d:GetAttributes()) do
+							if type(av) == "number" and isAmmoName(an) then out[#out + 1] = fieldFromAttr(d, an) end
+						end
+					end)
 				end
-			end)
+			end
 		end
 		return out
 	end
