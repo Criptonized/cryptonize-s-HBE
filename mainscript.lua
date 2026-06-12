@@ -4109,6 +4109,8 @@ pcall(function()
 	vmGroup:AddToggle("vmFullHealth", { Text = "Full Health/Durability", Default = false, Tooltip = "Hold detected health/durability values at full. (Default: OFF)" })
 	vmGroup:AddToggle("vmSetSpeed",   { Text = "Set Top Speed", Default = false, Tooltip = "Write the speed below to detected speed values + VehicleSeat.MaxSpeed. (Default: OFF)" })
 	vmGroup:AddSlider("vmTopSpeed",   { Text = "Top Speed", Min = 10, Max = 1000, Default = 200, Rounding = 0, Tooltip = "Value written when Set Top Speed is on. (Default: 200)" })
+	vmGroup:AddToggle("vmSpeedMult",  { Text = "Speed Boost (multiplier)", Default = false, Tooltip = "Multiply the vehicle's ORIGINAL top speed by the factor below\n(relative to stock, captured on detect -- doesn't compound). (Default: OFF)" })
+	vmGroup:AddSlider("vmSpeedMultX", { Text = "Speed Multiplier", Min = 1, Max = 5, Default = 2, Rounding = 1, Tooltip = "e.g. 5 = five times the stock top speed. (Default: 2)" })
 	-- Handling panel (screenshot-style). Writes to the detected VehicleSeat + any
 	-- matching tune NumberValues/attributes on the vehicle YOU drive (you own its
 	-- network, so the writes replicate). Auto-detected when you pick a vehicle.
@@ -4171,9 +4173,11 @@ pcall(function()
 
 	local vmB = { gas = {}, health = {}, speed = {}, torque = {}, turn = {}, steer = {}, turnaccel = {} }
 	local vmSeats, vmMaxSeen, vmIsAChassis = {}, {}, false
+	local vmSpeedBase = {}  -- [seat or speed-field] = stock top speed, captured on detect (so the multiplier is relative to stock, not compounding)
 	local function detectVehMod()
 		vmB = { gas = {}, health = {}, speed = {}, torque = {}, turn = {}, steer = {}, turnaccel = {} }
 		vmSeats, vmMaxSeen, vmIsAChassis = {}, {}, false
+		vmSpeedBase = {}
 		local m = pickedModel()
 		if not m then pcall(function() vmInfo:SetText("Detected: none -- sit in a vehicle or hold-pick one") end); return end
 		for _, d in ipairs(m:GetDescendants()) do
@@ -4201,6 +4205,9 @@ pcall(function()
 				end
 			end)
 		end
+		-- Capture stock top speed (seats + detected speed fields) for the multiplier.
+		for _, s in ipairs(vmSeats) do pcall(function() vmSpeedBase[s] = s.MaxSpeed end) end
+		for _, f in ipairs(vmB.speed) do pcall(function() local v = f.read(); if type(v) == "number" then vmSpeedBase[f] = v end end) end
 		pcall(function() vmInfo:SetText(("%sGas:%d HP:%d Spd:%d Trq:%d Turn:%d Seats:%d"):format(vmIsAChassis and "[A-Chassis] " or "", #vmB.gas, #vmB.health, #vmB.speed, #vmB.torque, #vmB.turn, #vmSeats)) end)
 	end
 	vmGroup:AddButton("Detect Values", detectVehMod):AddToolTip("Scan the picked vehicle for fuel/health/speed/handling values to modify.")
@@ -4256,6 +4263,12 @@ pcall(function()
 			local sp = Options.vmTopSpeed.Value
 			writeAll(vmB.speed, sp)
 			for _, s in ipairs(vmSeats) do if s.Parent then pcall(function() s.MaxSpeed = sp end) end end
+		end
+		-- Speed Boost multiplier: stock top speed x factor (relative to the captured base).
+		if Toggles.vmSpeedMult and Toggles.vmSpeedMult.Value then
+			local x = Options.vmSpeedMultX.Value
+			for _, s in ipairs(vmSeats) do if s.Parent and vmSpeedBase[s] then pcall(function() s.MaxSpeed = vmSpeedBase[s] * x end) end end
+			for _, f in ipairs(vmB.speed) do if vmSpeedBase[f] then pcall(function() f.write(vmSpeedBase[f] * x) end) end end
 		end
 		-- Handling panel (screenshot-style).
 		if Toggles.vehBoost and Toggles.vehBoost.Value then
@@ -4556,6 +4569,7 @@ pcall(function()
 		"Plugin externalization: the loader now fetches plugins from a Plugin Base URL (your GitHub raw folder, set in the Plugins tab or getgenv().FurryHBE_PluginBase) as <base>/<file>.lua. The Gun Combat block (aimbot/triggerbot/no-recoil), Spectate and the Advanced tab (radar/movement/persistence/auto-soften) were moved OUT into their own files (aimbot.lua, spectate.lua, advanced.lua, precision.lua) and removed from the core (~835 fewer lines). Core helpers getSafeGuiParent + relationshipColor are exposed on the Bridge so external plugins can reuse them.",
 		"Calibrate + Combat fix pass. Chams now default to AlwaysOnTop (see-through-walls wallhack) instead of Occluded. The Weapon Reader reads brand-named guns ('Weston Ranger') by inspecting their internals (Trigger/Barrel/Mag/Sight parts + ammo values) and now shows current/reserve ammo with a HUD-text fallback ('28 | 271'). Auto-Add Character Parts no longer dumps cosmetics/gear/weapon parts into the hitbox list (filtered), tracks exactly what it added, and adds Undo-Auto-Added + Reset-Body-Parts buttons. The scan also detects brand-named guns for Inf-Ammo. Tier-3 Learn now also snapshots HUD number labels so it catches ammo that lives only on-screen. Long scan / Phantom reports are capped on-screen (no more overlap) with Copy/Save-to-file buttons; profiles, the DB and saved reports now all live in a workspace/FurryHBE/ folder and report their exact path. The Plugins tab shows a loaded/total summary and warns on startup that plugins are off.",
 		"Stability + glitch sweep. Fixed stale ESP artifacts: a player with no torso (respawning) or with Streamer hideESP on now hides EVERY 2D element (name/team/health/box/tracer/off-screen marker/skeleton) -- before, several were left frozen on screen as floating squares/bars. The GUI-fallback renderer now rejects NaN/infinite coordinates and clamps every element's size/offset, so a bad projection can't smear a giant black bar across the top of the screen. Inf-Ammo's player-side scan is scoped to Backpack/leaderstats/Character ONLY (never PlayerGui/PlayerScripts) so it can't scribble the refill amount into the menu's own GUI state and corrupt the tabs. Vehicle Tuning now auto-detects the vehicle you're SITTING in (no manual pick needed) so the speed/handling writes have a target. Added Instant Interact on the Calibrate tab: sets every ProximityPrompt's HoldDuration to 0 (hold-to-interact becomes a tap), with restore-on-off and a live prompt count. Spectate reads the camera live so it survives a respawn. All core + 8 plugins Luau-compiler validated.",
+		"Feature batch: Silent Aim + World + tooling. New SilentAim plugin (hook-free Remote mode that fires the chosen damage remote at the FOV-locked target, plus an opt-in Extreme __namecall-hook mode SCOPED to that one remote that redirects the game's own fire to the target's bone). New World plugin (Fullbright, No Fog, Custom FOV, Infinite Stamina -- all generic client visuals/utility). Vehicle Tuning gained a Speed Boost multiplier (stock top speed x1-5, relative to the captured base). Spectate now RequestStreamAroundAsync's the target's area (and yours on reset) so StreamingEnabled games don't get stuck in 'Gameplay Paused'. The Calibrate tab gained a Weapon Deep-Dump: writes the held weapon's full tree + every Value/attribute + its scripts' read-only string constants + gun-related remotes to workspace/FurryHBE/, the raw data needed to build tailored per-game weapon hacks (inf-ammo/instant-reload/no-recoil/fire-rate) for server-side games where client value-writing can't work.",
 	}
 	local function verNum(i) return 1 + 0.5 * (i - 1) end
 	local function fmtV(n) return "V" .. (n == math.floor(n) and tostring(math.floor(n)) or tostring(n)) end
@@ -4734,13 +4748,16 @@ pcall(function()
 		"toolExpanderEnabled","toolExpandSize","toolAutoApply","toolAutoScanEquip","toolNonCollide",
 		"infAmmoEnabled","infAmmoAllTools","infAmmoAmount","infAmmoManualName",
 		"vehicleEspEnabled","vehicleEspAutoTrack","vehicleEspWheelCars","mvHbeEnabled","mvHbeSize","mvHbeTransparency","mvHbeCollisions","mvHbeWholeModel",
-		"vmInfGas","vmFullHealth","vmSetSpeed","vmTopSpeed",
+		"vmInfGas","vmFullHealth","vmSetSpeed","vmTopSpeed","vmSpeedMult","vmSpeedMultX",
 		"vehBoost","vehTargetSpeed","vehAccel","vehTurnRate","vehTurnAngle","vehTurnAccel","vehStability","vehStabilityStrength","vehKeepOwnership",
 		"streamerMaster","hideFOVCircle","hidePlayerESP","hideChams","hideHitboxGlow",
 		"weaponReaderAuto","groupRadius",
 		"silentMeleeEnabled","silentMeleeMode","silentMeleeRange","silentMeleeFOV","silentMeleeOnlyMelee","silentMeleeAura","silentMeleeAuraRate","silentMeleeIgnoreTeam","silentMeleeIgnoreWL","silentMeleeCrosshair","silentMeleeWallPen","silentMeleeShieldBypass","shieldNames",
 		"calApplyParts","calApplyAmmo","calApplyShields","deepScanEnabled","profileSourceUrl","pluginBaseUrl",
 		"instantInteract","interactDistance",
+		"fullbright","noFog","customFovEnabled","customFov","infStamina",
+		"weaponNoRecoil","weaponNoDrop","weaponInstantReload","weaponFireRate","weaponFireRateX","weaponFireRateMode",
+		"saEnabled","saMethod","saBone","saPriority","saLock","saFOVCircle","saFOV","saMaxDist","saHitChance","saLOS","saIgnoreTeam","saIgnoreWL","saRemote","saArg","saActivate","saRate","saRedirect","saHook",
 		"aimbotEnabled","aimbotTrigger","aimbotPart","aimbotFOV","aimbotSmooth","aimbotVisibleOnly","aimbotIgnoreTeam","aimbotIgnoreWL","aimbotShowFOV",
 		"triggerEnabled","triggerActivate","triggerDelay","triggerIgnoreTeam","norecoilEnabled",
 		"aimbotPredict","aimbotBulletSpeed","aimbotDropComp",
@@ -4796,7 +4813,8 @@ pcall(function()
 			"dragSelectMode", "silentMeleeEnabled", "silentMeleeAura",
 			"vmInfGas", "vmFullHealth", "vmSetSpeed", "vehBoost", "vehStability", "rrAuto",
 			"aimbotEnabled", "triggerEnabled", "norecoilEnabled", "bhopEnabled", "infJumpEnabled",
-			"instantInteract",
+			"instantInteract", "vmSpeedMult", "fullbright", "noFog", "customFovEnabled", "infStamina",
+			"saEnabled", "saHook", "weaponNoRecoil", "weaponNoDrop", "weaponInstantReload", "weaponFireRate",
 		}) do
 			pcall(function() if Toggles[k] then Toggles[k]:SetValue(false) end end)
 		end
@@ -5577,6 +5595,22 @@ pcall(function()
 		pcall(function() if tePart and tePart.Parent and teOrigSize then tePart.Size = teOrigSize end end)
 		teClearVisuals(); pcall(function() teGui:Destroy() end)
 	end })
+
+	-- Bottom-of-tab tutorial.
+	local combatHow = combatTab:AddLeftGroupbox("How to Use")
+	combatHow:AddLabel(
+		"WEAPON READER: shows the held gun's name/type/ammo. 'Auto-Read' keeps it live.\n\n" ..
+		"TARGET GROUPS: turn on 'Drag-Select Mode' and drag a box over players to tag them with a\n" ..
+		"  cyan highlight (used by Silent Melee's 'Whole Group' mode). Or 'Add Players in Radius'.\n\n" ..
+		"SILENT MELEE: lands melee hits without swinging at them. Only works on TOUCH-based melee\n" ..
+		"  (the 'Damage:' line confirms it -- 'touch conns' = good, 'remote/raycast' = won't work).\n" ..
+		"  1. Hold a melee (or use bare fists with 'Only Melee Weapons' off).\n" ..
+		"  2. Pick Target Mode (Closest to Crosshair / In Range / Whole Group) + Max Range.\n" ..
+		"  3. Left-click to hit, or turn on 'Auto (Kill Aura)'. Wall Penetration + Shield Bypass\n" ..
+		"     help if hits aren't landing.\n\n" ..
+		"TOOL HITBOX EDITOR: 'Edit Held Weapon' -> drag the green box handles (or X/Y/Z sliders) to\n" ..
+		"  enlarge the tool's damage hitbox. 'Reset to Original' restores it.",
+		true)
 	print("[Combat] Weapon Reader + Target Groups + Silent Melee registered")
 end)
 
@@ -5955,6 +5989,70 @@ pcall(function()
 		if applyProfile(strToProfile(Options.calProfileStr.Value)) then Library:Notify("Imported profile") else Library:Notify("Invalid profile string") end
 	end):AddToolTip("Apply a profile from the pasted string above.")
 
+	-- ===== Weapon Deep-Dump (reverse-engineering aid) ====================
+	-- Writes the FULL structure of the held weapon -- every child's class/name, every
+	-- Value's value, every attribute -- PLUS the read-only string constants of its
+	-- scripts (which reveal the value/remote/function names the gun's code uses) and the
+	-- gun-related RemoteEvents in the game. This is the data needed to build TAILORED
+	-- weapon hacks (inf-ammo/instant-reload/no-recoil/fire-rate) for a server-side game.
+	-- Pure read: getscriptclosure + debug.getconstants like Phantom Recon -- never writes.
+	local function dumpScriptConsts(inst, depth, lines)
+		pcall(function()
+			if (inst:IsA("ModuleScript") or inst:IsA("LocalScript") or inst:IsA("Script")) and getscriptclosure and debug and debug.getconstants then
+				local cl = getscriptclosure(inst); if not cl then return end
+				local strs, seen = {}, {}
+				local function harvest(fn)
+					local consts = debug.getconstants(fn)
+					if type(consts) == "table" then
+						for _, c in ipairs(consts) do
+							if type(c) == "string" and #c > 2 and #c < 64 and not seen[c] then seen[c] = true; strs[#strs + 1] = c end
+						end
+					end
+				end
+				harvest(cl)
+				pcall(function() for _, p in ipairs((debug.getprotos and debug.getprotos(cl)) or {}) do harvest(p) end end)
+				if #strs > 0 then lines[#lines + 1] = string.rep("  ", depth + 1) .. "[consts] " .. table.concat(strs, ", ") end
+			end
+		end)
+	end
+	local function dumpInstance(inst, depth, lines, cap)
+		if #lines >= cap then return end
+		local indent = string.rep("  ", depth)
+		local extra = ""
+		pcall(function() if inst:IsA("ValueBase") then extra = " = " .. tostring(inst.Value) end end)
+		lines[#lines + 1] = indent .. inst.ClassName .. " '" .. inst.Name .. "'" .. extra
+		pcall(function()
+			for an, av in pairs(inst:GetAttributes()) do lines[#lines + 1] = indent .. "  @" .. an .. " = " .. tostring(av) end
+		end)
+		dumpScriptConsts(inst, depth, lines)
+		for _, c in ipairs(inst:GetChildren()) do
+			if #lines >= cap then lines[#lines + 1] = indent .. "  ...(truncated)"; break end
+			dumpInstance(c, depth + 1, lines, cap)
+		end
+	end
+	scanGroup:AddButton("Deep-Dump Held Weapon", function()
+		local char = lPlayer.Character
+		local tool = char and char:FindFirstChildWhichIsA("Tool")
+		if not tool then Library:Notify("Hold a weapon first, then dump"); return end
+		local lines = { "=== Weapon Deep Dump ===", "Tool: " .. tool.Name, "PlaceId: " .. tostring(game.PlaceId), "" }
+		dumpInstance(tool, 0, lines, 4000)
+		lines[#lines + 1] = ""
+		lines[#lines + 1] = "=== Gun-related Remotes (name ~ fire/shoot/hit/damage/reload/weapon/gun/bullet) ==="
+		pcall(function()
+			local n = 0
+			for _, d in ipairs(game:GetDescendants()) do
+				if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then
+					local ln = d.Name:lower()
+					if ln:find("fire") or ln:find("shoot") or ln:find("hit") or ln:find("damage") or ln:find("reload") or ln:find("weapon") or ln:find("gun") or ln:find("bullet") or ln:find("ammo") then
+						n = n + 1; if n > 250 then break end
+						lines[#lines + 1] = d.ClassName .. " '" .. d.Name .. "'  @ " .. d:GetFullName()
+					end
+				end
+			end
+		end)
+		saveText("weapon_dump_" .. tostring(game.PlaceId) .. ".txt", table.concat(lines, "\n"))
+	end):AddToolTip("Write the held weapon's full structure + its scripts' string constants + gun\nremotes to workspace/FurryHBE/ -- the data needed to build tailored weapon hacks.")
+
 	-- ===== Tier 3: behavioral learning engine ===========================
 	-- Snapshot every numeric value/attribute on you + your character, you perform an
 	-- action (shoot / take damage / earn), then Analyze diffs the snapshot to surface
@@ -6033,13 +6131,22 @@ pcall(function()
 	learnGroup:AddButton("Analyze", analyze):AddToolTip("Diff against the snapshot and list what changed.")
 	learnGroup:AddButton("Top -> Inf-Ammo Name", function()
 		if Bridge.Calibrate.learned and Bridge.Calibrate.learned[1] and Options.infAmmoManualName then
-			local nm = Bridge.Calibrate.learned[1].label:gsub("@.*$", "")
+			local raw = Bridge.Calibrate.learned[1].label
+			-- A "HUD:" label is a TextLabel's displayed number, NOT a writable Instance
+			-- value -- it means the real value (e.g. ammo) is server-side. Feeding that
+			-- name to Inf-Ammo would match nothing AND couldn't be written anyway, so warn
+			-- instead of handing off a name that can't work.
+			if raw:match("^HUD:") then
+				Library:Notify("Top value is HUD display-only -> ammo is server-side here; Inf-Ammo can't refill it")
+				return
+			end
+			local nm = raw:gsub("@.*$", "")
 			pcall(function() Options.infAmmoManualName:SetValue(nm) end)
 			Library:Notify("Inf-Ammo manual name -> " .. nm)
 		else
 			Library:Notify("Analyze first")
 		end
-	end):AddToolTip("Feed the biggest-changed value's name into Inf-Ammo's manual detector.")
+	end):AddToolTip("Feed the biggest-changed value's name into Inf-Ammo's manual detector.\nWarns if the top value is HUD-only (server-side ammo can't be refilled).")
 
 	-- ===== Tier 4: Phantom Recon (read-only AC + combat introspection) ====
 	-- THE PRINCIPLE: never test the alarm by tripping it -- read the wiring diagram.
@@ -6279,6 +6386,22 @@ pcall(function()
 		if Toggles.instantInteract.Value then sweepPrompts() else Library:Notify("Enable Instant Interact first") end
 	end):AddToolTip("Re-apply HoldDuration=0 to every ProximityPrompt currently in the workspace.")
 
+	-- Bottom-of-tab tutorial.
+	local calHow = calTab:AddLeftGroupbox("How to Use")
+	calHow:AddLabel(
+		"This tab figures out how a game works so the cheat can adapt to it.\n\n" ..
+		"SCAN & EXTRACT (Tiers 1-2): detects character parts, the framework, guns + shields and\n" ..
+		"  auto-applies them (toggles up top). 'Undo Auto-Added Parts' reverses a bad apply.\n\n" ..
+		"LEARN (Tier 3): finds values WITHOUT names. Snapshot -> do an action (shoot / take\n" ..
+		"  damage / earn) -> Analyze lists what changed. A 'HUD:...' result = display-only =\n" ..
+		"  server-side (can't be written).\n\n" ..
+		"PHANTOM RECON (Tier 4): read-only anti-cheat recon. Then run Tier 5 Auto-Configure.\n\n" ..
+		"DEEP-DUMP HELD WEAPON: hold a gun -> writes its full structure + its scripts' constants\n" ..
+		"  + gun remotes to workspace/FurryHBE/ -- send that file to build a tailored weapon hack.\n\n" ..
+		"INSTANT INTERACT: sets every ProximityPrompt's hold time to 0. All files save to\n" ..
+		"workspace/FurryHBE/.",
+		true)
+
 	-- Auto-load a previously-saved profile for this place on startup.
 	pcall(function() loadProfile(false) end)
 	print("[Calibrate] F10 extract/calibrate registered")
@@ -6313,6 +6436,9 @@ pcall(function()
 	Bridge:RegisterPluginSource("Teleport", { tab = "Teleport", file = "teleport.lua",    url = RAW .. "teleport.lua",    desc = "Waypoints, teleport-to-player, seat teleport, anti-rubberband." })
 	Bridge:RegisterPluginSource("Remote",   { tab = "Remote",   file = "remotereplay.lua", url = RAW .. "remotereplay.lua", desc = "Manual RemoteEvent replay at the nearest target (for remote-damage games)." })
 	Bridge:RegisterPluginSource("InfAmmo",  { tab = "Inf Ammo", file = "infammo.lua",     url = RAW .. "infammo.lua",     desc = "Adaptive inf-ammo (5 strategies + learning) with gun picker." })
+	Bridge:RegisterPluginSource("SilentAim", { tab = "Silent Aim", file = "silentaim.lua", url = RAW .. "silentaim.lua",   desc = "Silent aim: hook-free Remote mode + opt-in Extreme namecall-hook redirect." })
+	Bridge:RegisterPluginSource("World",    { tab = "World",      file = "world.lua",     url = RAW .. "world.lua",       desc = "Fullbright, No Fog, Custom FOV, Infinite Stamina (generic client visuals/utility)." })
+	Bridge:RegisterPluginSource("Weapons",  { tab = "Weapons",    file = "weapons.lua",   url = RAW .. "weapons.lua",     desc = "Generic value-based gun hacks: No Recoil/Spread, No Bullet Drop, Instant Reload, Fire Rate." })
 
 	-- Plugins load on demand: their tabs + features DON'T EXIST until enabled, so an
 	-- absent Aimbot/Precision tab just looks broken. Make "they're off" obvious with a
