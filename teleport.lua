@@ -8,7 +8,10 @@ return {
 	load = function(ctx)
 	local HttpService = game:GetService("HttpService")
 	local lPlayer  = Players.LocalPlayer
-	local WP_FILE  = "FurryHBE_Waypoints.json"
+	-- Keep waypoints with the rest of the script's files in workspace/FurryHBE/.
+	local OUT_DIR  = "FurryHBE"
+	pcall(function() if makefolder and not (isfolder and isfolder(OUT_DIR)) then makefolder(OUT_DIR) end end)
+	local WP_FILE  = OUT_DIR .. "/Waypoints.json"
 
 	local teleportTab   = ctx.tab
 	local waypointGroup = teleportTab:AddLeftGroupbox("Waypoints")
