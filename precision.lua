@@ -28,7 +28,11 @@ return {
 	load = function(ctx)
 		local HttpService = game:GetService("HttpService")
 		local cam = Workspace.CurrentCamera
-		local CFG_FILE = "FurryHBE_Precision.json"
+		-- Save into the shared workspace/FurryHBE/ folder (same place the core's
+		-- profiles/reports go) so all of the script's files live in one findable spot.
+		local OUT_DIR = "FurryHBE"
+		pcall(function() if makefolder and not (isfolder and isfolder(OUT_DIR)) then makefolder(OUT_DIR) end end)
+		local CFG_FILE = OUT_DIR .. "/Precision.json"
 
 		local hbeGroup      = ctx:Groupbox("Precision HBE", "left")
 		local targetGroup   = ctx:Groupbox("Target Selection", "left")
@@ -92,7 +96,7 @@ return {
 			local data = {}
 			for _, k in ipairs(PRECISION_KEYS) do local c = Options[k] or Toggles[k]; if c ~= nil and k ~= "zoneColor" and k ~= "targetKeybind" then data[k] = c.Value end end
 			local ok = pcall(function() writefile(CFG_FILE, HttpService:JSONEncode(data)) end)
-			Library:Notify(ok and "Precision config saved" or "Save failed")
+			Library:Notify(ok and ("Precision config saved -> workspace/" .. CFG_FILE) or "Save failed")
 		end
 		local function loadPrecisionConfig(notify)
 			if not (isfile and readfile and isfile(CFG_FILE)) then if notify then Library:Notify("No saved Precision config") end return end
