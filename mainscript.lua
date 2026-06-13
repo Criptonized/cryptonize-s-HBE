@@ -5028,6 +5028,7 @@ pcall(function()
 			"aimbotEnabled", "triggerEnabled", "norecoilEnabled", "bhopEnabled", "infJumpEnabled",
 			"instantInteract", "vmSpeedMult", "fullbright", "noFog", "customFovEnabled", "infStamina",
 			"saEnabled", "saHook", "weaponNoRecoil", "weaponNoDrop", "weaponInstantReload", "weaponFireRate",
+			"veHold",
 		}) do
 			pcall(function() if Toggles[k] then Toggles[k]:SetValue(false) end end)
 		end
@@ -6674,6 +6675,7 @@ pcall(function()
 	Bridge:RegisterPluginSource("SilentAim", { tab = "Silent Aim", file = "silentaim.lua", url = RAW .. "silentaim.lua",   desc = "Silent aim: hook-free Remote mode + opt-in Extreme namecall-hook redirect." })
 	Bridge:RegisterPluginSource("World",    { tab = "World",      file = "world.lua",     url = RAW .. "world.lua",       desc = "Fullbright, No Fog, Custom FOV, Infinite Stamina (generic client visuals/utility)." })
 	Bridge:RegisterPluginSource("Weapons",  { tab = "Weapons",    file = "weapons.lua",   url = RAW .. "weapons.lua",     desc = "Generic value-based gun hacks: No Recoil/Spread, No Bullet Drop, Instant Reload, Fire Rate." })
+	Bridge:RegisterPluginSource("Values",   { tab = "Values",     file = "valueeditor.lua", url = RAW .. "valueeditor.lua", desc = "Universal value editor: pick any value (or click a HUD number) and set/hold it." })
 
 	-- Plugins load on demand: their tabs + features DON'T EXIST until enabled, so an
 	-- absent Aimbot/Precision tab just looks broken. Make "they're off" obvious with a
