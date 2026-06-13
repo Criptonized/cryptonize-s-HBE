@@ -728,17 +728,29 @@ function Bridge:GetOrMakeTab(name)
 	end
 	return self.Tabs[name]
 end
--- LinoriaLib has no RemoveTab, so unloading a plugin left an empty tab button behind
--- (groupboxes gone, tab stays). Destroy the tab's underlying Button + Container GUI and
--- drop the cache so the tab truly pops out on unload and re-creates fresh on re-enable.
+-- LinoriaLib has no RemoveTab, and DESTROYING a tab's Button/Container corrupts the UI:
+-- the Window still references them, so tab-switching + the cursor render loop hit dead
+-- instances and cascade-fail (tabs glitch, cursor freezes). So we only HIDE the tab button
+-- on unload (a pure property write -- safe) and KEEP the cache, so re-enable reuses the
+-- same tab and just un-hides it. (A hidden button can leave a small gap in the tab bar;
+-- that's the safe trade-off for not breaking the whole menu.)
 function Bridge:RemoveTab(name)
 	local tab = self.Tabs[name]
-	self.Tabs[name] = nil
 	if type(tab) ~= "table" then return end
 	pcall(function()
-		for _, k in ipairs({ "Button", "TabButton", "Container", "ContainerHolder", "TabFrame", "Holder", "Instance" }) do
-			local inst = rawget(tab, k)
-			if typeof(inst) == "Instance" then inst:Destroy() end
+		for _, k in ipairs({ "Button", "TabButton" }) do
+			local b = rawget(tab, k)
+			if typeof(b) == "Instance" then b.Visible = false end
+		end
+	end)
+end
+function Bridge:ShowTab(name)
+	local tab = self.Tabs[name]
+	if type(tab) ~= "table" then return end
+	pcall(function()
+		for _, k in ipairs({ "Button", "TabButton" }) do
+			local b = rawget(tab, k)
+			if typeof(b) == "Instance" then b.Visible = true end
 		end
 	end)
 end
@@ -805,6 +817,7 @@ function Bridge:EnablePlugin(name)
 	if not ok or type(mod) ~= "table" or type(mod.load) ~= "function" then return false, "bad module: " .. tostring(mod) end
 	local tab = self:GetOrMakeTab(mod.tab or name)
 	if not tab then return false, "no tab" end
+	self:ShowTab(mod.tab or name)  -- un-hide if this tab was hidden by a previous unload
 	local ctx = self:NewContext(name, tab)
 	local ok2, err = pcall(mod.load, ctx)
 	if not ok2 then pcall(function() ctx:teardown() end); return false, "load: " .. tostring(err) end
@@ -860,6 +873,32 @@ function Bridge:DeepDumpModel(root, title, fname, remoteWords)
 		end
 		if #got > 0 then lines[#lines + 1] = string.rep("  ", depth + 1) .. ". " .. table.concat(got, "  ") end
 	end
+	-- Require config-type ModuleScripts and print their numeric/string/bool values, so the
+	-- actual stat VALUES (fire rate, recoil, reload speed...) are visible -- the script
+	-- constants only show the code's strings, not the data. Only config-named modules are
+	-- required (avoid running behaviour modules); read-only, pcall-guarded.
+	local CFG_NAMES2 = { "config", "setting", "stat", "data", "tune", "value", "info", "properties", "props" }
+	local function looksCfg(n) n = tostring(n):lower() for _, w in ipairs(CFG_NAMES2) do if n:find(w, 1, true) then return true end end return false end
+	local function dumpModuleValues(inst, depth)
+		if not inst:IsA("ModuleScript") or not looksCfg(inst.Name) then return end
+		pcall(function()
+			local ok, mod = pcall(require, inst)
+			if not ok or type(mod) ~= "table" then return end
+			local kv, n = {}, 0
+			local function walk(t, prefix, dep, seen)
+				if dep > 3 or seen[t] then return end
+				seen[t] = true
+				for k, v in pairs(t) do
+					local tv = type(v)
+					if (tv == "number" or tv == "boolean" or tv == "string") and n < 120 then
+						n = n + 1; kv[#kv + 1] = prefix .. tostring(k) .. "=" .. tostring(v)
+					elseif tv == "table" then walk(v, prefix .. tostring(k) .. ".", dep + 1, seen) end
+				end
+			end
+			walk(mod, "", 1, {})
+			if #kv > 0 then lines[#lines + 1] = string.rep("  ", depth + 1) .. "[module values] " .. table.concat(kv, "  ") end
+		end)
+	end
 	local function dump(inst, depth, cap)
 		if #lines >= cap then return end
 		local indent = string.rep("  ", depth)
@@ -868,6 +907,7 @@ function Bridge:DeepDumpModel(root, title, fname, remoteWords)
 		lines[#lines + 1] = indent .. inst.ClassName .. " '" .. inst.Name .. "'" .. extra
 		pcall(function() for an, av in pairs(inst:GetAttributes()) do lines[#lines + 1] = indent .. "  @" .. an .. " = " .. tostring(av) end end)
 		pcall(dumpPhys, inst, depth)
+		pcall(dumpModuleValues, inst, depth)
 		dumpConsts(inst, depth)
 		for _, c in ipairs(inst:GetChildren()) do
 			if #lines >= cap then lines[#lines + 1] = indent .. "  ...(truncated)"; break end
@@ -4201,7 +4241,7 @@ pcall(function()
 	vmGroup:AddSlider("vmTopSpeed",   { Text = "Top Speed", Min = 10, Max = 1000, Default = 200, Rounding = 0, Tooltip = "Value written when Set Top Speed is on. (Default: 200)" })
 	vmGroup:AddToggle("vmSpeedMult",  { Text = "Speed Boost (multiplier)", Default = false, Tooltip = "Multiply the vehicle's ORIGINAL top speed by the factor below\n(relative to stock, captured on detect -- doesn't compound). (Default: OFF)" })
 	vmGroup:AddSlider("vmSpeedMultX", { Text = "Speed Multiplier", Min = 1, Max = 5, Default = 2, Rounding = 1, Tooltip = "e.g. 5 = five times the stock top speed. (Default: 2)" })
-	vmGroup:AddToggle("vehWheelBoost", { Text = "Wheel Motor Boost (physics)", Default = false, Tooltip = "For vehicles with NO speed value (driven by Cylindrical/Hinge\nwheel motors -- see the Physics readout). Scales the motors'\nAngularVelocity by the multiplier and raises their torque so\nthey can actually reach it. EXPERIMENTAL; needs network\nownership to stick. (Default: OFF)" })
+	vmGroup:AddToggle("vehWheelBoost", { Text = "Wheel Motor Boost (physics)", Default = false, Tooltip = "For vehicles with NO speed value (driven by Cylindrical/Hinge\nwheel motors). Raises the wheel motors' spin + torque AND\namplifies the vehicle's current velocity toward Multiplierx60.\nUses the Speed Multiplier slider. EXPERIMENTAL; needs network\nownership to stick -- watch the Owner readout. (Default: OFF)" })
 	-- Handling panel (screenshot-style). Writes to the detected VehicleSeat + any
 	-- matching tune NumberValues/attributes on the vehicle YOU drive (you own its
 	-- network, so the writes replicate). Auto-detected when you pick a vehicle.
@@ -4397,12 +4437,27 @@ pcall(function()
 		if Toggles.vehWheelBoost and Toggles.vehWheelBoost.Value then
 			vmWheelWasOn = true
 			local x = Options.vmSpeedMultX.Value
+			-- 1) wheel motors: raise spin target + torque + accel so the wheels can reach it.
 			for _, c in ipairs(vmMotors) do
 				if c.Parent then pcall(function()
 					c.MotorMaxTorque = math.max(vmMotorBase[c] or 0, (vmMotorBase[c] or 0) * x, 100000)
+					pcall(function() c.MotorMaxAngularAcceleration = math.max(c.MotorMaxAngularAcceleration, 1e6) end)
+					pcall(function() c.MotorMaxAcceleration = math.max(c.MotorMaxAcceleration, 1e6) end)  -- HingeConstraint variant
 					c.AngularVelocity = math.clamp(c.AngularVelocity * x, -1000, 1000)
 				end) end
 			end
+			-- 2) velocity force: amplify the vehicle's CURRENT horizontal motion toward a cap
+			-- (Y preserved so gravity/suspension still work; only while already moving so it
+			-- can't launch you from a standstill). This is what actually moves a server-driven
+			-- chassis -- IF you own its network (watch the Owner readout).
+			local prim = vmPrimary()
+			if prim then pcall(function()
+				local v = prim.AssemblyLinearVelocity
+				local h = Vector3.new(v.X, 0, v.Z)
+				if h.Magnitude > 5 then
+					prim.AssemblyLinearVelocity = h.Unit * math.min(h.Magnitude * x, 60 * x) + Vector3.new(0, v.Y, 0)
+				end
+			end) end
 		elseif vmWheelWasOn then
 			vmWheelWasOn = false
 			for _, c in ipairs(vmMotors) do if c.Parent and vmMotorBase[c] then pcall(function() c.MotorMaxTorque = vmMotorBase[c] end) end end
@@ -4718,6 +4773,7 @@ pcall(function()
 		"Stability + glitch sweep. Fixed stale ESP artifacts: a player with no torso (respawning) or with Streamer hideESP on now hides EVERY 2D element (name/team/health/box/tracer/off-screen marker/skeleton) -- before, several were left frozen on screen as floating squares/bars. The GUI-fallback renderer now rejects NaN/infinite coordinates and clamps every element's size/offset, so a bad projection can't smear a giant black bar across the top of the screen. Inf-Ammo's player-side scan is scoped to Backpack/leaderstats/Character ONLY (never PlayerGui/PlayerScripts) so it can't scribble the refill amount into the menu's own GUI state and corrupt the tabs. Vehicle Tuning now auto-detects the vehicle you're SITTING in (no manual pick needed) so the speed/handling writes have a target. Added Instant Interact on the Calibrate tab: sets every ProximityPrompt's HoldDuration to 0 (hold-to-interact becomes a tap), with restore-on-off and a live prompt count. Spectate reads the camera live so it survives a respawn. All core + 8 plugins Luau-compiler validated.",
 		"Feature batch: Silent Aim + World + tooling. New SilentAim plugin (hook-free Remote mode that fires the chosen damage remote at the FOV-locked target, plus an opt-in Extreme __namecall-hook mode SCOPED to that one remote that redirects the game's own fire to the target's bone). New World plugin (Fullbright, No Fog, Custom FOV, Infinite Stamina -- all generic client visuals/utility). Vehicle Tuning gained a Speed Boost multiplier (stock top speed x1-5, relative to the captured base). Spectate now RequestStreamAroundAsync's the target's area (and yours on reset) so StreamingEnabled games don't get stuck in 'Gameplay Paused'. The Calibrate tab gained a Weapon Deep-Dump: writes the held weapon's full tree + every Value/attribute + its scripts' read-only string constants + gun-related remotes to workspace/CryptsHBE/, the raw data needed to build tailored per-game weapon hacks (inf-ammo/instant-reload/no-recoil/fire-rate) for server-side games where client value-writing can't work.",
 		"Constrained-value + vehicle-physics pass. The whole script now treats Double/IntConstrainedValue as numeric (a TREK-style game stored ammo as DoubleConstrainedValue, so it was invisible to every scan -> inf-ammo now works). Inf-Ammo re-detects when its cached ammo objects get replaced (respawn re-creates the gun's value folder), fixing 'stops working after reset'. Outline Only now keeps the REAL part enlarged + invisible with a SelectionBox outline (the old proxy part wasn't recognised for hit-reg). Plugin unload now removes the empty tab (Bridge:RemoveTab). Vehicle Tuning gained physics detection: it counts Cylindrical/Hinge wheel motors, springs and body-movers, diagnoses the drive type, shows live actual speed + wheel spin, and adds a Wheel Motor Boost for constraint-driven vehicles with no speed value. Deep-Dump (weapon + new Picked-Vehicle button) now also prints constraint/body-mover physics props. The menu window is wider (720) so labels stop clipping; the changelog viewer is capped + copies full text to clipboard.",
+		"Stability + per-game depth pass. Plugin unload now only HIDES the tab (the previous destroy-tab corrupted LinoriaLib -> tab/cursor glitches); re-enable un-hides it. Inf-Ammo clears its caches on respawn so it re-applies after death. The Learn 'Top -> Inf-Ammo Name' button now skips HUD-only labels and picks the first real value (no more false 'server-side' warning when a writable ammo value exists). Wheel Motor Boost now also force-amplifies the vehicle's velocity toward Multiplier x 60 (the lever that moves a server-driven chassis you own) + raises motor acceleration. The Weapons plugin now reaches stats kept in a config-type ModuleScript (requires config/settings/stat/tune/... modules and writes their matching numeric keys), so Fire Rate / No-Recoil / Reload can hit framework configs (e.g. TREK), and the Deep-Dump now prints those modules' actual values so the exact stat key is visible.",
 	}
 	local function verNum(i) return 1 + 0.5 * (i - 1) end
 	local function fmtV(n) return "V" .. (n == math.floor(n) and tostring(math.floor(n)) or tostring(n)) end
@@ -6298,22 +6354,25 @@ pcall(function()
 	learnGroup:AddButton("Analyze", analyze):AddToolTip("Diff against the snapshot and list what changed.")
 	learnGroup:AddButton("Top -> Inf-Ammo Name", function()
 		if Bridge.Calibrate.learned and Bridge.Calibrate.learned[1] and Options.infAmmoManualName then
-			local raw = Bridge.Calibrate.learned[1].label
-			-- A "HUD:" label is a TextLabel's displayed number, NOT a writable Instance
-			-- value -- it means the real value (e.g. ammo) is server-side. Feeding that
-			-- name to Inf-Ammo would match nothing AND couldn't be written anyway, so warn
-			-- instead of handing off a name that can't work.
-			if raw:match("^HUD:") then
-				Library:Notify("Top value is HUD display-only -> ammo is server-side here; Inf-Ammo can't refill it")
+			-- Prefer the first REAL value (a writable Value/attribute) over a "HUD:" label
+			-- (a TextLabel's displayed number, which can't be written). The HUD label often
+			-- ties with the real value -- if we picked it we'd wrongly say "server-side"
+			-- even though a real ammo Value exists (and Inf-Ammo already refills it).
+			local pick
+			for _, r in ipairs(Bridge.Calibrate.learned) do
+				if not tostring(r.label):match("^HUD:") then pick = r.label; break end
+			end
+			if not pick then
+				Library:Notify("Only HUD display values changed -> ammo is server-side here")
 				return
 			end
-			local nm = raw:gsub("@.*$", "")
+			local nm = pick:gsub("@.*$", "")
 			pcall(function() Options.infAmmoManualName:SetValue(nm) end)
 			Library:Notify("Inf-Ammo manual name -> " .. nm)
 		else
 			Library:Notify("Analyze first")
 		end
-	end):AddToolTip("Feed the biggest-changed value's name into Inf-Ammo's manual detector.\nWarns if the top value is HUD-only (server-side ammo can't be refilled).")
+	end):AddToolTip("Feed the biggest CHANGED real value's name into Inf-Ammo's manual detector\n(skips HUD-only display values).")
 
 	-- ===== Tier 4: Phantom Recon (read-only AC + combat introspection) ====
 	-- THE PRINCIPLE: never test the alarm by tripping it -- read the wiring diagram.
