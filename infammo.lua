@@ -222,7 +222,15 @@ return {
 			"client ammo Value (e.g. 'Bullets') --\n" ..
 			"NOT the on-screen number or the caliber.",
 			true)
-		pluginCleanup = function() if ammoConn then pcall(function() ammoConn:Disconnect() end) end end
+		-- On respawn the gun is rebuilt with fresh value objects; clear the per-tool caches
+		-- so detection runs clean on the new gun (belt-and-suspenders with the alive-check).
+		local charConn = lPlayer.CharacterAdded:Connect(function()
+			table.clear(fieldCache); table.clear(snapshots); lastHow = nil
+		end)
+		pluginCleanup = function()
+			if ammoConn then pcall(function() ammoConn:Disconnect() end) end
+			if charConn then pcall(function() charConn:Disconnect() end) end
+		end
 	end,
 	unload = function() if pluginCleanup then pcall(pluginCleanup); pluginCleanup = nil end end,
 }
