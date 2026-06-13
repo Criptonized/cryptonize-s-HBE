@@ -21,7 +21,24 @@ local function heldTool()
 	local c = lPlayer.Character
 	return c and c:FindFirstChildWhichIsA("Tool") or nil
 end
--- Build a restorable field list (Value objects + numeric attributes) matching `words`.
+-- Some gun frameworks (TREK, FE kits) keep stats in a config-type ModuleScript instead of
+-- instance Values, so fire-rate/recoil/reload have no Value to write. We require those
+-- modules (the executor shares the game's require cache, so it's the SAME table the gun
+-- reads) and expose their matching numeric keys as writable fields. Only modules NAMED
+-- like config/settings/stats/data/tune/values are required, to avoid running behaviour
+-- modules with side effects. Best-effort: only helps if the gun reads the table live.
+local CFG_NAMES = { "config", "setting", "stat", "data", "tune", "value", "info", "properties", "props" }
+local function looksLikeConfig(name) name = tostring(name):lower() for _, w in ipairs(CFG_NAMES) do if name:find(w, 1, true) then return true end end return false end
+local function scanTable(t, words, out, depth, seen)
+	if depth > 4 or type(t) ~= "table" or seen[t] then return end
+	seen[t] = true
+	for k, v in pairs(t) do
+		if type(v) == "number" and type(k) == "string" and nameHas(k, words) then
+			out[#out + 1] = { orig = v, set = function(n) pcall(function() t[k] = n end) end }
+		elseif type(v) == "table" then scanTable(v, words, out, depth + 1, seen) end
+	end
+end
+-- Build a restorable field list (Value objects + numeric attributes + config-module keys).
 local function fieldsFor(tool, words)
 	local out = {}
 	if not tool then return out end
@@ -35,6 +52,12 @@ local function fieldsFor(tool, words)
 					if type(av) == "number" and nameHas(an, words) then out[#out + 1] = { orig = av, set = function(v) pcall(function() d:SetAttribute(an, v) end) end } end
 				end
 			end)
+			if d:IsA("ModuleScript") and looksLikeConfig(d.Name) then
+				pcall(function()
+					local ok, mod = pcall(require, d)
+					if ok and type(mod) == "table" then scanTable(mod, words, out, 1, {}) end
+				end)
+			end
 		end
 	end)
 	return out
@@ -77,7 +100,7 @@ return {
 		local RECOIL_W = { "recoil", "spread", "kick", "bloom", "sway", "camkick", "recoilx", "recoily", "recoilz", "punch", "shake" }
 		local DROP_W   = { "bulletdrop", "bulletgravity", "projectilegravity", "drop", "falloff", "gravity" }
 		local RELOAD_W = { "reloadtime", "reloadduration", "reloaddelay", "reloadcooldown" }
-		local RATE_W   = { "firerate", "cooldown", "firedelay", "shotdelay", "debounce", "firetime", "rof", "rpm", "roundspersecond", "roundsperminute" }
+		local RATE_W   = { "firerate", "cooldown", "firedelay", "shotdelay", "debounce", "firetime", "rof", "rpm", "roundspersecond", "roundsperminute", "rateoffire", "fireinterval", "shootdelay", "shootcooldown", "spm", "windup", "winddown", "charge" }
 
 		local fR, fD, fL, fF = newFeature(), newFeature(), newFeature(), newFeature()
 		local last = 0
