@@ -3754,6 +3754,7 @@ pcall(function()
 		"Recon deep-dive suite (1 plugin, 10 read-only tools). Damage Model (per held weapon: touch/raycast/remote -> RECOMMENDS the combat tool + warns when HBE = invalid), Module API map (require every ReplicatedStorage module + dump its table shape), GC/Closure scan (config/stat/ammo/anti tables + functions), Networking/Ownership (isnetworkowner + sim radius -> what you can physics-control), Animation/Timing (tool anim IDs + tracks playing + lengths), Input/Binds (KeyCodes referenced by LocalScripts), Map/World (spawns/teams/objectives/loot/prompts/seats), Economy/Shop (currency + items/prices + purchase remotes), Character/Rig (a target's parts/joints/hitbox names for HBE bones), Anti-Cheat (Phantom Recon summary + AC-named scripts). All reports session-tagged to workspace/CryptsHBE/. Now 19 plugins.",
 		"Core slim-down #1: the whole Vehicle/Misc tab (Vehicle Assist, Combat Tool Expander/Scanner, Manual Vehicle HBE, Vehicle Modify/Tuning + Wheel Motor Boost, Vehicle ESP -- ~1,170 lines) was EXTRACTED to a Vehicle plugin (vehicle.lua), dropping the core from ~6,980 to ~5,810 lines. Behaviour is unchanged (the three original blocks run verbatim; only the tab handle now comes from the plugin context, and it builds once so re-enabling won't duplicate groupboxes). Enable 'Vehicle' from the Plugins tab to get the tab back. Now 20 plugins.",
 		"Combat plugin-GATED (kept inline). The Combat tab (Weapon Reader, Target Groups, Silent Melee, Tool Hitbox Editor) is too integrated to move safely (it publishes Bridge.Weapon/TargetGroup), so the code stays in the core but is now gated: the tab is hidden by default and every action loop (melee swing, kill-aura, crosshair, weapon-reader, drag-select) early-returns until the Combat plugin sets Bridge.CombatActive. Enable 'Combat' from the Plugins tab to show the tab + activate it (works with Section Loader too). Now 21 plugins.",
+		"Economy plugin + World markers. Economy (new tab): scan currency values (cash/points/score/kills/time), WATCH one -- it logs each gain and labels it AUTOMATIC (server granted on kill/time) vs via-your-fire; scan grant remotes (award/reward/kill/score/earn...), pick one + args, and Fire Once / Auto-Farm to duplicate the earn request, with currency read-back proving WORKS (client-grantable) vs no-change (server-authoritative). World plugin gained World Markers: objective + loot/ammo ESP (name + distance) with Teleport-to-Nearest-Loot/Objective. Now 22 plugins.",
 	}
 	local function verNum(i) return 1 + 0.5 * (i - 1) end
 	local function fmtV(n) return "V" .. (n == math.floor(n) and tostring(math.floor(n)) or tostring(n)) end
@@ -3958,6 +3959,7 @@ pcall(function()
 		-- RemoteSniffer: persist the filters but NOT sniffActive (never auto-install a hook on inject).
 		"sniffCombatOnly","sniffFilter","sniffShowArgs",
 		"engAutoSwing","engSwingRPM","engInstantBuild","engYear",
+		"ecoArgs","ecoAutoFarm","ecoRate","worldMarkers","worldMarkerDist",
 		"saEnabled","saMethod","saBone","saPriority","saLock","saFOVCircle","saFOV","saMaxDist","saHitChance","saLOS","saIgnoreTeam","saIgnoreWL","saRemote","saArg","saActivate","saRate","saRedirect","saHook",
 		"aimbotEnabled","aimbotTrigger","aimbotPart","aimbotFOV","aimbotSmooth","aimbotVisibleOnly","aimbotIgnoreTeam","aimbotIgnoreWL","aimbotShowFOV",
 		"triggerEnabled","triggerActivate","triggerDelay","triggerIgnoreTeam","norecoilEnabled",
@@ -4020,6 +4022,7 @@ pcall(function()
 			"artTargetCam", "artAutoShoot", "artDelayOverride", "artElevOverride", "artInfTurret",
 			"veHold", "veInspect", "hitMarkerEnabled", "secFinished", "secApplyDist",
 			"weaponForceAuto", "weaponAutoFire", "sniffActive", "engAutoSwing", "engInstantBuild",
+			"ecoAutoFarm", "worldMarkers",
 		}) do
 			pcall(function() if Toggles[k] then Toggles[k]:SetValue(false) end end)
 		end
@@ -5754,6 +5757,7 @@ pcall(function()
 	Bridge:RegisterPluginSource("Recon",     { tab = "Recon",      file = "recon.lua",     url = RAW .. "recon.lua",       desc = "Deep-dive analysis suite: Damage Model (recommends the combat tool), Module API map, GC scan, Networking/ownership, Animation, Input binds, Map/World, Economy/Shop, Character/Rig, Anti-Cheat -- read-only reports to workspace/CryptsHBE/." })
 	Bridge:RegisterPluginSource("Vehicle",   { tab = "Vehicle/Misc", file = "vehicle.lua", url = RAW .. "vehicle.lua",     desc = "The Vehicle/Misc tab (extracted from the core to shrink it): Vehicle Assist + Tool Expander + Manual Vehicle HBE + Vehicle Modify/Tuning + Vehicle ESP. Enable to get the tab back." })
 	Bridge:RegisterPluginSource("Combat",    { tab = "Combat",     file = "combat.lua",    url = RAW .. "combat.lua",      desc = "Gate for the inline Combat tab (Weapon Reader, Target Groups, Silent Melee, Tool Hitbox Editor). Code stays in the core; this shows the tab + makes its features active only while enabled." })
+	Bridge:RegisterPluginSource("Economy",   { tab = "Economy",    file = "economy.lua",   url = RAW .. "economy.lua",     desc = "Currency detection + point-farm: watch a currency value (classifies auto/server vs your-fire gains), find the grant remote, and Fire/Auto-Farm it with read-back to prove if it pays out." })
 
 	-- Plugins load on demand: their tabs + features DON'T EXIST until enabled, so an
 	-- absent Aimbot/Precision tab just looks broken. Make "they're off" obvious with a
