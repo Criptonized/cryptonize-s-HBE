@@ -37,6 +37,31 @@ local function numFromText(txt)
 	return tonumber(s:match("%-?%d+%.?%d*"))
 end
 
+-- Map a value's NAME to the dedicated plugin that can act on that KIND of value, so the
+-- inspector can hint "this is better handled by X" instead of just editing it raw. Only
+-- suggests a plugin that's actually registered; matching a "handled here" category returns nil.
+local SUGGEST = {
+	{ words = { "ammo", "mag", "clip", "round", "reserve", "bullet", "shell" }, plugin = "InfAmmo", note = "hold ammo full" },
+	{ words = { "windup", "winddown", "firerate", "cooldown", "recoil", "reload", "spread", "burst" }, plugin = "TREK", note = "config-stat / fire rate" },
+	{ words = { "cash", "money", "coin", "credit", "score", "kill", "gold", "gem", "token", "point", "xp", "bounty" }, plugin = "Economy", note = "detect / farm points" },
+	{ words = { "speed", "throttle", "torque", "velocity", "accel", "gear", "rpm", "chassis" }, plugin = "Vehicle", note = "vehicle tuning" },
+	{ words = { "stamina", "energy", "sprint", "breath", "endurance", "oxygen", "fatigue" }, plugin = "World", note = "infinite stamina" },
+	{ words = { "build", "progress", "construct", "stage" }, plugin = "Engineer", note = "instant build" },
+}
+local function suggestPlugin(name)
+	local ln = tostring(name):lower()
+	for _, s in ipairs(SUGGEST) do
+		for _, w in ipairs(s.words) do
+			if ln:find(w, 1, true) then
+				local B = getgenv().CryptsHBE
+				if s.plugin and B and B.PluginSources and B.PluginSources[s.plugin] then return s.plugin, s.note end
+				return nil
+			end
+		end
+	end
+	return nil
+end
+
 return {
 	name = "Values", tab = "Values", requires = {},
 	load = function(ctx)
@@ -216,7 +241,10 @@ return {
 			selInst = entry and entry.inst or nil
 			highlightSelected()
 			if entry then
-				pcall(function() veInfo:SetText(("Selected: %s\nCurrent: %s\nRating: %s -- %s"):format(selField.path, tostring(selField.read()), entry.rate:upper(), entry.reason)) end)
+				local sp, snote = suggestPlugin(selInst and selInst.Name or selField.path)
+				pcall(function() veInfo:SetText(("Selected: %s\nCurrent: %s\nRating: %s -- %s%s"):format(
+					selField.path, tostring(selField.read()), entry.rate:upper(), entry.reason,
+					sp and ("\nBetter handled by: " .. sp .. " plugin (" .. snote .. ")") or "")) end)
 				pcall(function() tint(veInfo, entry.rate) end)
 			end
 		end)
@@ -361,15 +389,17 @@ return {
 			if target and target.Parent then
 				boxTo(hoverBox, target)
 				pcall(function() if hoverBox:FindFirstChildOfClass("UIStroke") then hoverBox:FindFirstChildOfClass("UIStroke").Color = col end end)
+				local sp, snote = suggestPlugin(target.Name)
 				pcall(function()
 					local locked = (o == nil)   -- cursor has left the element (e.g. on the menu)
-					hoverTag.Text = (locked and " [LOCKED] " or " ") .. target.Name .. "  = " .. tostring(numFromText(target.Text)) .. " "
+					local hint = sp and ("\n   \u{2192} " .. sp .. " plugin: " .. snote) or ""
+					hoverTag.Text = (locked and " [LOCKED] " or " ") .. target.Name .. "  = " .. tostring(numFromText(target.Text)) .. " " .. hint
 					hoverTag.TextColor3 = col
 					local ap = target.AbsolutePosition
-					hoverTag.Position = UDim2.fromOffset(ap.X, math.max(0, ap.Y - 18))
+					hoverTag.Position = UDim2.fromOffset(ap.X, math.max(0, ap.Y - (sp and 32 or 18)))
 					hoverTag.Visible = true
 				end)
-				pcall(function() lblHover:SetText((o == nil and "LOCKED: " or "Hover: ") .. target.Name .. " = " .. tostring(numFromText(target.Text))) end)
+				pcall(function() lblHover:SetText((o == nil and "LOCKED: " or "Hover: ") .. target.Name .. " = " .. tostring(numFromText(target.Text)) .. (sp and ("  [\u{2192} " .. sp .. "]") or "")) end)
 			else
 				hoverBox.Visible = false; hoverTag.Visible = false
 				pcall(function() lblHover:SetText("Hover: point at a HUD number") end)
