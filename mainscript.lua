@@ -1640,6 +1640,7 @@ end)
 -- Emergency + Console are folded into the Settings tab (formerly Profiles) so the
 -- tab bar isn't so spread out.
 local emergencyGroupbox = profilesTab:AddRightGroupbox("Fixes")
+emergencyGroupbox:AddToggle("menuAutoHide", { Text = "Auto-hide while menu open", Default = true, Tooltip = "While the menu is open, hide ESP/FOV/chams + the combat crosshair and stop HBE\nextension, so they don't get in the way; restores when you close it. (Default: ON)" })
 local consoleGroupbox = profilesTab:AddRightGroupbox("Error Console")
 local consoleOutput = consoleGroupbox:AddLabel("No errors detected", true)  -- wrap so long errors don't clip off-screen
 local consoleCopyButton = consoleGroupbox:AddButton("Copy Latest Error", function()
@@ -1728,6 +1729,11 @@ Options.panicKeybind:OnClick(function()
 		Toggles.extenderToggled:SetValue(not Toggles.extenderToggled.Value)
 	end
 end)
+-- QOL: bind the common toggles too (ESP names + HBE master). OnClick fires once per press.
+miscGroupbox:AddLabel("Toggle HBE (master)"):AddKeyPicker("hbeKeybind", { Default = "", NoUI = false, Text = "Toggle HBE" })
+Options.hbeKeybind:OnClick(function() if Toggles.extenderToggled then Toggles.extenderToggled:SetValue(not Toggles.extenderToggled.Value) end end)
+miscGroupbox:AddLabel("Toggle ESP Names"):AddKeyPicker("espKeybind", { Default = "", NoUI = false, Text = "Toggle ESP" })
+Options.espKeybind:OnClick(function() if Toggles.espNameToggled then Toggles.espNameToggled:SetValue(not Toggles.espNameToggled.Value) end end)
 Library.ToggleKeybind = Options.menuKeybind
 
 -- Plugin keybind registry: plugins call Bridge:AddKeybind on load and clear on unload.
@@ -1886,6 +1892,7 @@ end
 
 function runUpdatePlayers()
 	if not getgenv().CryptsHBELoaded then return end
+	if Bridge.MenuOpen then return end   -- Auto-hide: don't extend hitboxes while the menu is open
 
 	-- Safety: stop extending while the local player is dead/spectating.
 	if Toggles.autoOffWhenDead and Toggles.autoOffWhenDead.Value and isLocalDead() then
@@ -1949,6 +1956,34 @@ function resetAllPlayers()
 			end)
 		end)
 	end
+end
+
+-- ===== Auto-hide while the menu is open =====================================
+-- When the LinoriaLib menu is open, hide ESP/FOV/chams + stop HBE extension + hide the
+-- combat crosshair, so nothing is in the way while you click around the menu; restore on
+-- close. Reuses the Streamer hide flags (ESP/FOV/chams already honor them) + sets
+-- Bridge.MenuOpen (runUpdatePlayers + the combat crosshair + hit marker check it).
+do
+	local function menuOpen()
+		local ok, t = pcall(function() return Library.Toggled end)   -- LinoriaLib: true = menu visible
+		if ok and type(t) == "boolean" then return t end
+		return false
+	end
+	local wasOpen, saved = false, nil
+	RunService.Heartbeat:Connect(function()
+		local want = (Toggles.menuAutoHide and Toggles.menuAutoHide.Value) and menuOpen()
+		if want and not wasOpen then
+			wasOpen = true
+			saved = { Bridge.Streamer.hideESP, Bridge.Streamer.hideFOV, Bridge.Streamer.hideChams }
+			Bridge.Streamer.hideESP, Bridge.Streamer.hideFOV, Bridge.Streamer.hideChams = true, true, true
+			Bridge.MenuOpen = true
+			pcall(resetAllPlayers); pcall(function() if resetWorldParts then resetWorldParts() end end)
+		elseif (not want) and wasOpen then
+			wasOpen = false
+			Bridge.MenuOpen = false
+			if saved then Bridge.Streamer.hideESP, Bridge.Streamer.hideFOV, Bridge.Streamer.hideChams = saved[1], saved[2], saved[3]; saved = nil end
+		end
+	end)
 end
 
 -- ===== World-part / vehicle HBE =====================================
@@ -3756,6 +3791,11 @@ pcall(function()
 		"Combat plugin-GATED (kept inline). The Combat tab (Weapon Reader, Target Groups, Silent Melee, Tool Hitbox Editor) is too integrated to move safely (it publishes Bridge.Weapon/TargetGroup), so the code stays in the core but is now gated: the tab is hidden by default and every action loop (melee swing, kill-aura, crosshair, weapon-reader, drag-select) early-returns until the Combat plugin sets Bridge.CombatActive. Enable 'Combat' from the Plugins tab to show the tab + activate it (works with Section Loader too). Now 21 plugins.",
 		"Economy plugin + World markers. Economy (new tab): scan currency values (cash/points/score/kills/time), WATCH one -- it logs each gain and labels it AUTOMATIC (server granted on kill/time) vs via-your-fire; scan grant remotes (award/reward/kill/score/earn...), pick one + args, and Fire Once / Auto-Farm to duplicate the earn request, with currency read-back proving WORKS (client-grantable) vs no-change (server-authoritative). World plugin gained World Markers: objective + loot/ammo ESP (name + distance) with Teleport-to-Nearest-Loot/Objective. Now 22 plugins.",
 		"Value Editor plugin-aware hints. When you hover a value (Inspect Mode) or select one, it now suggests the dedicated plugin that handles that KIND of value -- ammo -> Inf Ammo, fire-rate/recoil -> TREK, cash/score/kills -> Economy, speed/torque -> Vehicle, stamina -> World, build -> Engineer -- shown as a subtle second line on the hover tag (and a 'Better handled by:' line on the selected value). Only suggests a plugin that's actually registered; otherwise stays out of the way.",
+		"Calibrator + Recon fixes (from new dumps). Added TREK to the Calibrate framework fingerprint (TREK_SERVICES/TREK_Remotes/TREKGun -> 'enable TREK plugin') -- it was never in the list, so TREK games weren't auto-flagged (nothing was removed). Recon Anti-Cheat now scans GAME containers only + skips CorePackages/CoreGui (was flooding with Roblox-internal false positives like validateOperation/Semantic). Economy currency scan now also reads PlayerGui TextLabels (points like Pordier's 122/585 are a HUD label, not a leaderstat, so the value-only scan missed them).",
+		"Menu auto-hide + fixes. New 'Auto-hide while menu open' (Settings, default ON): while the LinoriaLib menu is open it hides ESP/FOV/chams + the combat crosshair and stops HBE extension (via Library.Toggled + the Streamer hide flags + Bridge.MenuOpen), restoring on close. Engineer Instant Build now throttles its write to ~5Hz (kills the lag) and the read-back says REVERTED -- server-side build when value-writes don't stick (which is why it only ticks up 1/swing -- the build is server-validated; Auto-Swing is the only client lever). Economy now detects HUD-label points; note that editing currency is VISUAL-ONLY on server-authoritative games (you can't spend it) -- the real path is replaying the server's award remote (e.g. KilledBy) captured via the Remote Sniffer.",
+		"Remote Sniffer -> Fire (replay). Captured calls now store their raw args, so you can Replay Once / Auto-Replay (rate) a captured call -- the one lever for server-side things value-writes can't touch: farm points (replay a kill/award remote like KilledBy), bolt -> pseudo-full-auto (replay the gun's Shoot), or the Bleeding Blades legit-hit replay. 'Retarget to nearest enemy' swaps Player/Vector3 args to turn a captured hit into a silent one. If the server validates the call it won't land (server limit, not a bug).",
+		"Smart Setup + hint-jump. Calibrate is now the suite's brain: 'Smart Setup -> Recommend Plugins' fingerprints the game (frameworks incl. TREK, guns, vehicle seats, shields/melee, currency, build tools) and lists the plugins it needs; 'Enable Recommended' loads them all in one click. The Value Editor's plugin hint gained an 'Enable Suggested Plugin' button (one click to load the tool for the hovered/selected value's kind). Both make per-game setup near-automatic.",
+		"QOL batch. (1) Performance/Health monitor: live FPS + Lua memory (MB) + plugins loaded/total + tracked + status, shown on the watermark AND a colour-coded 'Health' label (green/yellow/red by FPS) in Performance; Bridge.FPS() exposed. (2) Plugin Manager QOL: per-plugin status colour (green loaded / red failed / grey off), Enable ALL / Disable ALL, and file-based Auto-Enable-on-inject (save your favourite plugins -> they auto-load every run, via workspace/CryptsHBE/autoenable.json). (3) Keybind QOL: bind Toggle HBE + Toggle ESP (PANIC already bindable) in the Keybinds tab.",
 	}
 	local function verNum(i) return 1 + 0.5 * (i - 1) end
 	local function fmtV(n) return "V" .. (n == math.floor(n) and tostring(math.floor(n)) or tostring(n)) end
@@ -3928,7 +3968,7 @@ pcall(function()
 		"partSpecificSizing","headSize","torsoSize","limbSize","dynamicSizing","smoothTransitions",
 		"transitionSpeed","collisionsToggled","outlineMode","outlineTransparency","maxDistance",
 		"closestTargetsOnly","maxTargets","updateRate","perfAdaptive","perfFpsFloor","randomizationToggled","randomizationAmount",
-		"humanizationToggled","legitModeToggled","crosshairMode","seatDisableHBE","seatRadiusMode","seatRadius","seatExitDelayEnabled","seatExitDelay",
+		"humanizationToggled","legitModeToggled","crosshairMode","menuAutoHide","seatDisableHBE","seatRadiusMode","seatRadius","seatExitDelayEnabled","seatExitDelay",
 		"espNameToggled","espNameSize","espHighlightToggled","espBoxToggled","espBoxScale",
 		"espTracerToggled","espSkeletonToggled","espHealthBarToggled","espNameType","espMaxDistance",
 		-- ESP extras + anti-detect
@@ -3958,7 +3998,7 @@ pcall(function()
 		"artTrajectory","artScatterRadius","artArc","artTargetCam","artCamHeight","artCamBack","artAutoShoot","artShootRate","artDelayOverride","artDelayValue","artElevOverride","artElevExtra","artInfTurret",
 		"secFinished","secApplyDist","secHBEDist","secESPDist",
 		-- RemoteSniffer: persist the filters but NOT sniffActive (never auto-install a hook on inject).
-		"sniffCombatOnly","sniffFilter","sniffShowArgs",
+		"sniffCombatOnly","sniffFilter","sniffShowArgs","sniffRetarget","sniffAutoReplay","sniffReplayRate",
 		"engAutoSwing","engSwingRPM","engInstantBuild","engYear",
 		"ecoArgs","ecoAutoFarm","ecoRate","worldMarkers","worldMarkerDist",
 		"saEnabled","saMethod","saBone","saPriority","saLock","saFOVCircle","saFOV","saMaxDist","saHitChance","saLOS","saIgnoreTeam","saIgnoreWL","saRemote","saArg","saActivate","saRate","saRedirect","saHook",
@@ -4023,7 +4063,7 @@ pcall(function()
 			"artTargetCam", "artAutoShoot", "artDelayOverride", "artElevOverride", "artInfTurret",
 			"veHold", "veInspect", "hitMarkerEnabled", "secFinished", "secApplyDist",
 			"weaponForceAuto", "weaponAutoFire", "sniffActive", "engAutoSwing", "engInstantBuild",
-			"ecoAutoFarm", "worldMarkers",
+			"ecoAutoFarm", "worldMarkers", "sniffAutoReplay",
 		}) do
 			pcall(function() if Toggles[k] then Toggles[k]:SetValue(false) end end)
 		end
@@ -4081,6 +4121,7 @@ pcall(function()
 	Bridge.FlashHitMarker = function(dur) flashUntil = math.max(flashUntil, tick() + (dur or 0.2)) end
 	RunService.Heartbeat:Connect(function()
 		local now = tick()
+		if Bridge.MenuOpen then showMarker(false); return end   -- hide while menu open
 		if Toggles.hitMarkerEnabled and Toggles.hitMarkerEnabled.Value then
 			local attackOnly = not (Toggles.hitMarkerAttackOnly and not Toggles.hitMarkerAttackOnly.Value)
 			for _, plr in ipairs(Players:GetPlayers()) do
@@ -4101,26 +4142,48 @@ pcall(function()
 	end)
 end)
 
--- ===== [Improvement #15] On-screen watermark (name | tracked | status) =====
+-- ===== [Improvement #15] On-screen watermark + Performance/Health monitor =====
 pcall(function()
-	-- Toggle to show/hide it (it had no off-switch before). Lives in Performance.
 	local grp = performanceGroupbox or mainTab:AddRightGroupbox("UI")
-	grp:AddToggle("showWatermark", { Text = "Show Watermark", Default = false, Tooltip = "On-screen watermark: name | tracked players | status. (Default: OFF)" }):OnChanged(function()
+	grp:AddToggle("showWatermark", { Text = "Show Watermark", Default = false, Tooltip = "On-screen watermark: FPS | memory | plugins | tracked | status. (Default: OFF)" }):OnChanged(function()
 		pcall(function() Library:SetWatermarkVisibility(Toggles.showWatermark.Value) end)
 	end)
 	pcall(function() Library:SetWatermarkVisibility(Toggles.showWatermark.Value) end)
+	-- Health readout (colour-coded by FPS) in the Performance box.
+	local healthLabel = grp:AddLabel("Health: -", true)
+	local function tintLabel(lbl, color)
+		pcall(function()
+			local direct = rawget(lbl, "TextLabel") or rawget(lbl, "Label") or rawget(lbl, "Instance")
+			if typeof(direct) == "Instance" and direct:IsA("TextLabel") then direct.TextColor3 = color; return end
+			for _, k in ipairs({ "Holder", "Container", "TextLabel", "Instance" }) do
+				local h = rawget(lbl, k)
+				if typeof(h) == "Instance" then if h:IsA("TextLabel") then h.TextColor3 = color end for _, d in ipairs(h:GetDescendants()) do if d:IsA("TextLabel") then d.TextColor3 = color end end end
+			end
+		end)
+	end
+	-- live FPS (sampled every 0.5s) -- exposed on the Bridge for any module.
+	local fps, frames, fpsT = 60, 0, tick()
+	RunService.RenderStepped:Connect(function()
+		frames = frames + 1
+		local now = tick()
+		if now - fpsT >= 0.5 then fps = math.floor(frames / (now - fpsT) + 0.5); frames = 0; fpsT = now end
+	end)
+	Bridge.FPS = function() return fps end
 	task.spawn(function()
 		while getgenv().CryptsHBEInjected do
-			if Toggles.showWatermark and Toggles.showWatermark.Value then
-				pcall(function()
-					local n = 0
-					for _ in pairs(players) do n = n + 1 end
-					local status = (#errorLog == 0) and "OK" or ("ERR " .. #errorLog)
-					if Library.SetWatermark then
-						Library:SetWatermark(string.format("cryptonize's library  |  tracked %d  |  %s", n, status))
-					end
-				end)
-			end
+			pcall(function()
+				local n = 0; for _ in pairs(players) do n = n + 1 end
+				local total = 0; for _ in pairs(Bridge.PluginSources) do total = total + 1 end
+				local loaded = 0; for _, e in pairs(Bridge.Plugins) do if e and e.loaded then loaded = loaded + 1 end end
+				local mem = math.floor((collectgarbage("count") or 0) / 1024 + 0.5)   -- Lua memory MB
+				local status = (#errorLog == 0) and "OK" or ("ERR " .. #errorLog)
+				local col = (fps >= 50 and Color3.fromRGB(70, 220, 90)) or (fps >= 30 and Color3.fromRGB(245, 215, 60)) or Color3.fromRGB(235, 70, 70)
+				pcall(function() healthLabel:SetText(("Health: FPS %d  |  mem %dMB  |  plugins %d/%d  |  tracked %d  |  %s"):format(fps, mem, loaded, total, n, status)) end)
+				tintLabel(healthLabel, col)
+				if Toggles.showWatermark and Toggles.showWatermark.Value and Library.SetWatermark then
+					Library:SetWatermark(("cryptonize's library  |  FPS %d  |  %dMB  |  plugins %d/%d  |  tracked %d  |  %s"):format(fps, mem, loaded, total, n, status))
+				end
+			end)
 			task.wait(1)
 		end
 	end)
@@ -4732,7 +4795,7 @@ pcall(function()
 	local smLastInfo = 0
 	local smLockCache, smLockT = nil, 0
 	local smCrossConn = RunService.RenderStepped:Connect(function()
-		if not combatOn() then pcall(function() smCross.Visible = false end); return end
+		if not combatOn() or getgenv().CryptsHBE.MenuOpen then pcall(function() smCross.Visible = false end); return end
 		local enabled = Toggles.silentMeleeEnabled and Toggles.silentMeleeEnabled.Value
 		local locked = nil
 		if enabled and Options.silentMeleeMode.Value ~= "Target Group" then
@@ -5019,6 +5082,7 @@ pcall(function()
 		{ name = "A-Chassis (vehicles)", any = { "A-Chassis Tune", "AChassisTune" } },
 		{ name = "ACS (guns)",           any = { "ACS_Engine", "ACS_Storage", "ACS_Client", "ACS_Server", "ACS_Tools" } },
 		{ name = "FE Gun Kit (guns)",    any = { "GunStates", "FAS", "GunValue", "MainModuleFE" } },
+		{ name = "TREK gun/vehicle framework (-> enable TREK plugin)", any = { "TREK_SERVICES", "TREK_Remotes", "TREK_Gun", "TREK_Vehicle", "TREKGun" } },
 		{ name = "Adonis Admin",         any = { "Adonis", "Adonis_Loader" } },
 		{ name = "HD Admin",             any = { "HDAdminMain", "HDAdminClient", "HDAdminServer" } },
 		{ name = "Kohl's Admin",         any = { "KAdmin", "Kohls" } },
@@ -5229,6 +5293,47 @@ pcall(function()
 	scanGroup:AddButton("Scan Only (no apply)", function()
 		runScan(false); Library:Notify("Scan complete (report only)")
 	end):AddToolTip("Show what would be detected without changing any lists.")
+	-- ===== Smart Setup: fingerprint the game -> recommend + enable the right plugins =====
+	-- Turns Calibrate into the suite's "brain": after a scan it decides which plugins this
+	-- game needs (TREK/Vehicle/Combat/Economy/Engineer/aim/etc.) and can enable them in one click.
+	local SS_CUR = { "cash", "money", "coin", "credit", "point", "score", "kill", "gold", "gem", "token", "xp", "funds", "wealth" }
+	local SS_BUILD = { "shovel", "spade", "pick", "hammer", "wrench", "build", "trowel", "entrench" }
+	local function ssWord(s, words) s = tostring(s):lower() for _, w in ipairs(words) do if s:find(w, 1, true) then return true end end return false end
+	scanGroup:AddButton("Smart Setup -> Recommend Plugins", function()
+		runScan(false)
+		local fws = detectFrameworks() or {}
+		local fwStr = (table.concat(fws, ", ")):lower()
+		local cal = Bridge.Calibrate or {}
+		local rec, seen = {}, {}
+		local function add(p, why) if (not seen[p]) and Bridge.PluginSources and Bridge.PluginSources[p] then seen[p] = true; rec[#rec + 1] = { p = p, why = why } end end
+		add("Recon", "universal recon"); add("Values", "universal value editor")
+		if fwStr:find("trek") then add("TREK", "TREK gun framework") end
+		if fwStr:find("chassis") then add("Vehicle", "A-Chassis vehicles") end
+		if cal.guns and #cal.guns > 0 then add("InfAmmo", "guns + ammo"); add("Weapons", "gun stats"); add("Aimbot", "aim at players"); add("SilentAim", "silent aim") end
+		local seats = 0; pcall(function() for _, d in ipairs(Workspace:GetDescendants()) do if d:IsA("VehicleSeat") or d:IsA("Seat") then seats = 1; break end end end)
+		if seats > 0 then add("Vehicle", "vehicle seats present") end
+		if (cal.shields and #cal.shields > 0) or fwStr:find("combat") or fwStr:find("sword") then add("Combat", "melee/combat"); add("SilentAim", "remote/melee hit") end
+		local hasCur = false
+		pcall(function() for _, d in ipairs(lPlayer:GetDescendants()) do if (d:IsA("IntValue") or d:IsA("NumberValue")) and ssWord(d.Name, SS_CUR) then hasCur = true; break end end end)
+		if not hasCur then pcall(function() local pg = lPlayer:FindFirstChildOfClass("PlayerGui") if pg then for _, d in ipairs(pg:GetDescendants()) do if d:IsA("TextLabel") and ssWord(d.Name, SS_CUR) then hasCur = true; break end end end end) end
+		if hasCur then add("Economy", "currency/points present"); add("RemoteSniffer", "capture award remote") end
+		local bt = false
+		pcall(function() for _, where in ipairs({ lPlayer.Character, lPlayer:FindFirstChild("Backpack") }) do if where then for _, t in ipairs(where:GetChildren()) do if t:IsA("Tool") and ssWord(t.Name, SS_BUILD) then bt = true; break end end end end end)
+		if bt then add("Engineer", "build tool") end
+		Bridge.Calibrate.recommended = rec
+		local lines = { "Smart Setup:", "Frameworks: " .. (#fws > 0 and table.concat(fws, ", ") or "none/custom") }
+		for _, r in ipairs(rec) do lines[#lines + 1] = "  + " .. r.p .. " (" .. r.why .. ")" end
+		lines[#lines + 1] = "-> 'Enable Recommended' to load them."
+		pcall(function() reportLabel:SetText(table.concat(lines, "\n")) end)
+		Library:Notify("Smart Setup: " .. #rec .. " plugin(s) recommended")
+	end):AddToolTip("Fingerprint this game and recommend which plugins to enable for it (frameworks, guns, vehicles, currency, build tools).")
+	scanGroup:AddButton("Enable Recommended", function()
+		local rec = (Bridge.Calibrate and Bridge.Calibrate.recommended) or {}
+		if #rec == 0 then Library:Notify("Run 'Smart Setup' first"); return end
+		local ok = 0
+		for _, r in ipairs(rec) do if pcall(function() return Bridge:EnablePlugin(r.p) end) then ok = ok + 1 end end
+		Library:Notify("Enabled " .. ok .. "/" .. #rec .. " recommended plugins")
+	end):AddToolTip("Enable every plugin Smart Setup recommended for this game.")
 	-- Reverse an auto-apply: remove exactly what the last scan added (restores your prior
 	-- hitbox setup), or wipe the Body Parts list back to the limb defaults.
 	scanGroup:AddButton("Undo Auto-Added Parts", function()
@@ -5770,24 +5875,66 @@ pcall(function()
 		pcall(function() pmSummary:SetText(("Plugins loaded: %d / %d%s"):format(pmLoaded, pmTotal, pmLoaded == 0 and "  --  ALL OFF, enable below" or "")) end)
 	end
 
+	-- per-plugin status colour (green loaded / red failed / grey off)
+	local function tintStatus(lbl, color)
+		pcall(function()
+			local direct = rawget(lbl, "TextLabel") or rawget(lbl, "Label") or rawget(lbl, "Instance")
+			if typeof(direct) == "Instance" and direct:IsA("TextLabel") then direct.TextColor3 = color; return end
+			for _, k in ipairs({ "Holder", "Container", "TextLabel", "Instance" }) do
+				local h = rawget(lbl, k)
+				if typeof(h) == "Instance" then if h:IsA("TextLabel") then h.TextColor3 = color end for _, d in ipairs(h:GetDescendants()) do if d:IsA("TextLabel") then d.TextColor3 = color end end end
+			end
+		end)
+	end
+	local PM_GREEN, PM_RED, PM_GREY = Color3.fromRGB(70, 220, 90), Color3.fromRGB(235, 70, 70), Color3.fromRGB(150, 150, 150)
+	local rowEnable, rowUnload = {}, {}
 	-- One manager row (status + Enable + Unload) per registered plugin.
 	local function addRow(name)
-		local status = pmGroup:AddLabel(name .. ": not loaded")
-		pmGroup:AddButton("Enable " .. name, function()
+		local status = pmGroup:AddLabel(name .. ": not loaded"); tintStatus(status, PM_GREY)
+		local function doEnable()
 			local ok, err = Bridge:EnablePlugin(name)
-			status:SetText(name .. (ok and ": loaded" or (": FAILED - " .. tostring(err))))
+			status:SetText(name .. (ok and ": loaded" or (": FAILED - " .. tostring(err)))); tintStatus(status, ok and PM_GREEN or PM_RED)
 			if ok and not loadedSet[name] then loadedSet[name] = true; pmLoaded = pmLoaded + 1; refreshSummary() end
-			if Library and Library.Notify then Library:Notify(ok and ("Enabled " .. name) or ("Enable failed: " .. tostring(err))) end
-		end):AddToolTip(Bridge.PluginSources[name] and Bridge.PluginSources[name].desc or "")
-		pmGroup:AddButton("Unload " .. name, function()
+			return ok, err
+		end
+		local function doUnload()
 			Bridge:UnloadPlugin(name)
-			status:SetText(name .. ": not loaded")
+			status:SetText(name .. ": not loaded"); tintStatus(status, PM_GREY)
 			if loadedSet[name] then loadedSet[name] = nil; pmLoaded = math.max(0, pmLoaded - 1); refreshSummary() end
-			if Library and Library.Notify then Library:Notify("Unloaded " .. name) end
-		end)
+		end
+		rowEnable[name], rowUnload[name] = doEnable, doUnload
+		pmGroup:AddButton("Enable " .. name, function() local ok, err = doEnable(); if Library and Library.Notify then Library:Notify(ok and ("Enabled " .. name) or ("Enable failed: " .. tostring(err))) end end):AddToolTip(Bridge.PluginSources[name] and Bridge.PluginSources[name].desc or "")
+		pmGroup:AddButton("Unload " .. name, function() doUnload(); if Library and Library.Notify then Library:Notify("Unloaded " .. name) end end)
 	end
 	for n in pairs(Bridge.PluginSources) do addRow(n) end
 	refreshSummary()
+
+	-- ===== Quick Actions (QOL): enable/disable all + auto-enable favourites on inject =====
+	local HttpService = game:GetService("HttpService")
+	local AE_FILE = "CryptsHBE/autoenable.json"
+	local function readAE() local t = { enabled = false, list = {} } pcall(function() if isfile and readfile and isfile(AE_FILE) then local d = HttpService:JSONDecode(readfile(AE_FILE)); if type(d) == "table" then t = d end end end) return t end
+	local function writeAE(t) pcall(function() if makefolder and not (isfolder and isfolder("CryptsHBE")) then makefolder("CryptsHBE") end if writefile then writefile(AE_FILE, HttpService:JSONEncode(t)) end end) end
+	local qa = pmTab:AddRightGroupbox("Quick Actions")
+	qa:AddButton("Enable ALL", function() local n = 0 for nm in pairs(Bridge.PluginSources) do if rowEnable[nm] and rowEnable[nm]() then n = n + 1 end end Library:Notify("Enabled " .. n .. " plugins") end):AddToolTip("Load every registered plugin (heavy -- fetches each from GitHub).")
+	qa:AddButton("Disable ALL", function() for nm in pairs(Bridge.PluginSources) do if rowUnload[nm] then rowUnload[nm]() end end Library:Notify("Disabled all plugins") end)
+	qa:AddInput("autoEnableList", { Text = "Auto-enable list", Default = "", Tooltip = "Comma-separated plugin names auto-loaded on inject (e.g. Values,Recon,Combat)." })
+	local ae0 = readAE(); pcall(function() Options.autoEnableList:SetValue(table.concat(ae0.list or {}, ",")) end)
+	qa:AddLabel(ae0.enabled and ("Auto-enable: ON (" .. #(ae0.list or {}) .. ")") or "Auto-enable: off", true)
+	qa:AddButton("Use Currently Loaded", function() local t = {} for nm in pairs(loadedSet) do t[#t + 1] = nm end Options.autoEnableList:SetValue(table.concat(t, ",")) Library:Notify("Filled with " .. #t .. " loaded plugin(s)") end):AddToolTip("Put the currently-enabled plugins into the list.")
+	qa:AddButton("Save Auto-Enable (ON)", function()
+		local list = {} for nm in tostring(Options.autoEnableList.Value or ""):gmatch("[^,]+") do nm = nm:gsub("%s", ""); if nm ~= "" then list[#list + 1] = nm end end
+		writeAE({ enabled = true, list = list }); Library:Notify("Auto-enable saved (" .. #list .. ") -- loads next inject")
+	end):AddToolTip("These plugins auto-load every time you run the script.")
+	qa:AddButton("Clear Auto-Enable", function() writeAE({ enabled = false, list = {} }); Library:Notify("Auto-enable cleared") end)
+	-- apply on inject (after the UI settles)
+	task.spawn(function()
+		task.wait(0.5)
+		local ae = readAE()
+		if ae.enabled and type(ae.list) == "table" and #ae.list > 0 then
+			local n = 0 for _, nm in ipairs(ae.list) do if rowEnable[nm] then if pcall(rowEnable[nm]) then n = n + 1 end end end
+			if Library and Library.Notify then Library:Notify("Auto-enabled " .. n .. " plugin(s)") end
+		end
+	end)
 	if Library and Library.Notify then
 		pcall(function() Library:Notify("Plugins are OFF -- enable them in the Plugins tab to use Aimbot / Precision / Teleport / Inf Ammo / etc.", 10) end)
 	end
