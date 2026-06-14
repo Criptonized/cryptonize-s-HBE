@@ -915,6 +915,47 @@ function Bridge:DeepDumpModel(root, title, fname, remoteWords)
 		end
 	end
 	dump(root, 0, 4000)
+	-- Vehicle profile: classify the platform (plane/heli/tank/armoured/car/ATV/artillery),
+	-- detect tracked-vs-wheeled, a gun/turret + its ammo, so the dump says WHAT it is and
+	-- whether it has a weapon system at a glance.
+	if tostring(title):lower():find("vehicle") then
+		pcall(function()
+			local p = { wheels = 0, treads = 0, seats = 0, turrets = 0, wings = 0, rotors = 0, thrust = 0, hinge = 0, cyl = 0, ammo = {} }
+			for _, d in ipairs(root:GetDescendants()) do
+				local n = d.Name:lower()
+				if n:find("wheel") or n:find("tire") or n:find("tyre") then p.wheels = p.wheels + 1 end
+				if n:find("tread") or n:find("track") or n:find("caterpillar") or n:find("sprocket") then p.treads = p.treads + 1 end
+				if n:find("turret") or n:find("cannon") or n:find("barrel") or n:find("muzzle") or (n:find("gun") and not n:find("gunner")) then p.turrets = p.turrets + 1 end
+				if n:find("wing") or n:find("aileron") or n:find("rudder") or n:find("elevator") or n:find("flap") then p.wings = p.wings + 1 end
+				if n:find("rotor") or n:find("propeller") or n:find("rotorblade") then p.rotors = p.rotors + 1 end
+				if d:IsA("VehicleSeat") or d:IsA("Seat") then p.seats = p.seats + 1 end
+				if d:IsA("VectorForce") or d:IsA("BodyThrust") or d:IsA("LinearVelocity") or d:IsA("BodyVelocity") then p.thrust = p.thrust + 1 end
+				if d:IsA("HingeConstraint") then p.hinge = p.hinge + 1 end
+				if d:IsA("CylindricalConstraint") then p.cyl = p.cyl + 1 end
+				if (d:IsA("IntValue") or d:IsA("NumberValue") or d:IsA("DoubleConstrainedValue") or d:IsA("IntConstrainedValue"))
+					and (n:find("ammo") or n:find("shell") or n:find("round") or n:find("magazine") or n:find("rocket") or n:find("missile")) then
+					p.ammo[#p.ammo + 1] = d.Name .. "=" .. tostring(d.Value) .. " (" .. d.ClassName .. ")"
+				end
+			end
+			local cls
+			if p.wings >= 2 or (p.thrust > 0 and p.wings > 0) then cls = "Plane / aircraft"
+			elseif p.rotors >= 1 and p.thrust > 0 then cls = "Helicopter"
+			elseif p.treads >= 2 then cls = (p.turrets > 0 and "Tank (tracked + turret)" or "Tracked vehicle")
+			elseif p.turrets > 0 and p.wheels >= 3 then cls = "Armoured vehicle (wheeled + turret)"
+			elseif p.wheels >= 4 then cls = "Car / wheeled vehicle"
+			elseif p.wheels >= 1 and p.wheels <= 3 then cls = "ATV / bike"
+			elseif p.turrets > 0 then cls = "Artillery / emplaced gun"
+			else cls = "unknown" end
+			lines[#lines + 1] = ""
+			lines[#lines + 1] = "=== Vehicle Profile ==="
+			lines[#lines + 1] = "Type guess: " .. cls
+			lines[#lines + 1] = ("Drive: %s   wheels=%d treads=%d cyl=%d hinge=%d thrust=%d"):format(
+				(p.treads >= 2 and "TRACKED" or (p.wheels > 0 and "wheeled" or "constraint/other")), p.wheels, p.treads, p.cyl, p.hinge, p.thrust)
+			lines[#lines + 1] = ("Seats=%d  Gun/turret parts=%d  Wings=%d  Rotors=%d"):format(p.seats, p.turrets, p.wings, p.rotors)
+			lines[#lines + 1] = "Has weapon system: " .. (p.turrets > 0 and "YES (turret/gun)" or "no turret parts found")
+			lines[#lines + 1] = "Ammo values: " .. (#p.ammo > 0 and table.concat(p.ammo, "  ") or "none on the model (may live on the operator's taskbar tool)")
+		end)
+	end
 	if type(remoteWords) == "table" then
 		lines[#lines + 1] = ""
 		lines[#lines + 1] = "=== Related Remotes ==="
@@ -1228,6 +1269,16 @@ antiDetectionGroupbox:AddToggle("humanizationToggled", { Text = "Humanization De
 antiDetectionGroupbox:AddSlider("humanizationDelay", { Text = "Delay (ms)", Min = 0, Max = 1000, Default = 100, Rounding = 1, Tooltip = "Delay in milliseconds between target switches. (Default: 100)" }):OnChanged(updatePlayers)
 antiDetectionGroupbox:AddToggle("legitModeToggled", { Text = "Legit Mode", Default = false, Tooltip = "Only extend when crosshair is near target. (Default: OFF)" }):OnChanged(updatePlayers)
 antiDetectionGroupbox:AddSlider("legitModeFOV", { Text = "Legit FOV", Min = 1, Max = 50, Default = 10, Rounding = 1, Tooltip = "FOV threshold for legit mode. (Default: 10)" }):OnChanged(updatePlayers)
+-- Crosshair reference used by the FOV Filter / Legit Mode / Auto-Expand AND the combat
+-- crosshair. 1st Person = screen centre; 3rd Person = follows your mouse cursor (when not
+-- shiftlocked). Lets "only within crosshair" work in a 3rd-person, free-cursor game.
+antiDetectionGroupbox:AddDropdown("crosshairMode", { Text = "Crosshair Mode", Values = { "1st Person (center)", "3rd Person (cursor)" }, Default = "1st Person (center)", Multi = false, AllowNull = false, Tooltip = "1st = aim point is screen centre.\n3rd = aim point follows your cursor (free mouse).\nUsed by FOV Filter, Legit/Auto-Expand and the combat crosshair." }):OnChanged(updatePlayers)
+-- Hit Marker: a small center-tick flash when an enemy takes damage right after you attack.
+-- Deliberately NOT a fill/flash on the target (which would hide players behind it in a
+-- crowd) -- just a crosshair tick, so the play area stays fully visible.
+antiDetectionGroupbox:AddToggle("hitMarkerEnabled", { Text = "Hit Marker", Default = false, Tooltip = "Flash a small crosshair tick when an enemy's HP drops just after you\nattack -- confirms a hit without hiding targets behind it. (Default: OFF)" })
+antiDetectionGroupbox:AddToggle("hitMarkerAttackOnly", { Text = "Hit Marker: only when I attack", Default = true, Tooltip = "Only flash if you clicked/fired in the last 0.5s (filters out hits other\nplayers landed). Off = flash on ANY enemy HP drop nearby. (Default: ON)" })
+antiDetectionGroupbox:AddLabel("Hit Marker Color"):AddColorPicker("hitMarkerColor", { Title = "Hit Marker Color", Default = Color3.fromRGB(255, 255, 255) })
 antiDetectionGroupbox:AddToggle("autoOffWhenDead", { Text = "Auto-Off When Dead", Default = false, Tooltip = "Automatically stop extending while you are dead or spectating. (Default: OFF)" }):OnChanged(updatePlayers)
 antiDetectionGroupbox:AddToggle("seatDisableHBE", { Text = "Disable While Seated", Default = true, Tooltip = "Stop extending hitboxes while YOU sit in any seat (car/turret/etc).\nPrevents the in-vehicle freeze where players & cars look stuck.\nResumes automatically when you get out. (Default: ON)" }):OnChanged(updatePlayers)
 antiDetectionGroupbox:AddToggle("seatRadiusMode", { Text = "Seated: Nearby Only", Default = false, Tooltip = "When seated, only disable hitboxes for players\nwithin the radius below instead of everyone. (Default: OFF)" }):OnChanged(updatePlayers)
@@ -1301,6 +1352,7 @@ espAdvancedGroupbox:AddToggle("espDistanceFade", { Text = "Distance Fade", Defau
 espAdvancedGroupbox:AddSlider("espOverlapGap", { Text = "Overlap Spacing", Min = 8, Max = 40, Default = 16, Rounding = 0, Tooltip = "Vertical pixels enforced between names by Anti-Overlap. (Default: 16)" })
 espAdvancedGroupbox:AddToggle("espSkeletonToggled", { Text = "Skeleton ESP", Default = false, Tooltip = "Draw lines between the character's bones. (Default: OFF)" }):OnChanged(updatePlayers)
 espAdvancedGroupbox:AddToggle("espOffscreenToggled", { Text = "Off-Screen Markers", Default = false, Tooltip = "Show an edge marker pointing toward off-screen players. (Default: OFF)" }):OnChanged(updatePlayers)
+espAdvancedGroupbox:AddToggle("espOffscreenPulse", { Text = "Proximity Pulse", Default = true, Tooltip = "Off-screen markers pulse (size + slight brighten) more as the\nplayer gets closer -- a subtle 'they're near' indicator. (Default: ON)" })
 espAdvancedGroupbox:AddToggle("espHalfRate", { Text = "Half-Rate ESP (perf)", Default = false, Tooltip = "Redraw ESP every other frame (~30fps) instead of every frame.\nRoughly halves ESP CPU cost; slight position lag. (Default: OFF)" })
 espAdvancedGroupbox:AddToggle("espTracerToggled", { Text = "Tracer Lines", Default = false, Tooltip = "Show lines from screen center to players. (Default: OFF)" }):OnChanged(updatePlayers)
 espAdvancedGroupbox:AddLabel("Tracer Color"):AddColorPicker("espTracerColor", { Title = "Tracer Color", Default = Color3.fromRGB(255, 0, 0) })
@@ -1722,6 +1774,20 @@ SaveManager:BuildConfigSection(mainTab)
 SaveManager:LoadAutoloadConfig()
 
 -- Helper functions (moved after UI creation to avoid reference errors)
+-- The crosshair reference point (screen-space, same space as WorldToViewportPoint):
+-- screen centre in 1st person, or the live mouse cursor in 3rd person (unless shiftlocked,
+-- where the cursor is pinned to centre anyway). Used by every "near the crosshair" check
+-- and by the crosshair/FOV-circle drawing so they all agree.
+local function getAimPoint()
+	local vp = Camera.ViewportSize
+	local mode = (Options.crosshairMode and Options.crosshairMode.Value) or ""
+	if mode:find("3rd") and UserInputService.MouseBehavior ~= Enum.MouseBehavior.LockCenter then
+		local ok, ml = pcall(function() return UserInputService:GetMouseLocation() end)
+		if ok and typeof(ml) == "Vector2" then return ml end
+	end
+	return Vector2.new(vp.X / 2, vp.Y / 2)
+end
+
 local function updateFOVCircle()
 	local success, err = pcall(function()
 		-- Streamer Mode: force the circle hidden while keeping the FOV filter live.
@@ -1741,7 +1807,7 @@ local function updateFOVCircle()
 
 		fovCircle.Visible = true
 		fovCircle.Radius = Options.fovSize.Value
-		fovCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+		fovCircle.Position = getAimPoint()
 		fovCircle.Color = Options.fovColor.Value
 		fovCircle.Thickness = Options.fovThickness.Value
 	end)
@@ -2274,11 +2340,10 @@ local function isPlayerInFOV(playerChar)
 	
 	local pos, onScreen = WorldToViewportPoint(Camera, head.Position)
 	if not onScreen then return false end
-	
-	local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+
 	local screenPos = Vector2.new(pos.X, pos.Y)
-	local distance = (screenPos - screenCenter).Magnitude
-	
+	local distance = (screenPos - getAimPoint()).Magnitude
+
 	return distance <= Options.fovSize.Value
 end
 
@@ -2318,11 +2383,10 @@ local function isInLegitMode(playerChar)
 	
 	local pos, onScreen = WorldToViewportPoint(Camera, head.Position)
 	if not onScreen then return false end
-	
-	local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+
 	local screenPos = Vector2.new(pos.X, pos.Y)
-	local distance = (screenPos - screenCenter).Magnitude
-	
+	local distance = (screenPos - getAimPoint()).Magnitude
+
 	return distance <= Options.legitModeFOV.Value
 end
 
@@ -2574,8 +2638,7 @@ function addPlayer(player)
 			if head then
 				local pos, onScreen = WorldToViewportPoint(Camera, head.Position)
 				if onScreen then
-					local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-					local dist = (Vector2.new(pos.X, pos.Y) - center).Magnitude
+					local dist = (Vector2.new(pos.X, pos.Y) - getAimPoint()).Magnitude
 					local fovR = (Options.fovSize and Options.fovSize.Value) or 100
 					if dist <= fovR then
 						baseSize = baseSize * 1.5
@@ -3139,9 +3202,20 @@ function addPlayer(player)
 					if dir.Magnitude < 1 then dir = Vector2.new(0, -1) end
 					dir = dir.Unit
 					local markerPos = center + dir * (math.min(vp.X, vp.Y) / 2 - 40)
-					offscreenMarker.Size = Vector2.new(10, 10)
-					offscreenMarker.Position = Vector2.new(markerPos.X - 5, markerPos.Y - 5)
-					offscreenMarker.Color = flashCol or ((Toggles.espNameUseTeamColor.Value and player.Team and pcall(function() return player.TeamColor.Color end) and player.TeamColor.Color) or Options.espNameColor1.Value)
+					local baseCol = flashCol or ((Toggles.espNameUseTeamColor.Value and player.Team and pcall(function() return player.TeamColor.Color end) and player.TeamColor.Color) or Options.espNameColor1.Value)
+					-- Proximity pulse: the closer the off-screen player, the more the marker
+					-- grows + brightens (subtle, stays near the base colour). p = closeness 0..1.
+					local sz, col = 10, baseCol
+					if Toggles.espOffscreenPulse and Toggles.espOffscreenPulse.Value then
+						local ref = (maxEspDist > 0 and maxEspDist) or 500
+						local p = math.clamp(1 - distance / ref, 0, 1); p = p * p  -- ramp up only when close
+						local wave = math.sin(tick() * (6 + p * 10)) * 0.5 + 0.5
+						sz = 10 + 8 * p * wave
+						col = baseCol:Lerp(Color3.fromRGB(255, 255, 255), 0.4 * p * wave)
+					end
+					offscreenMarker.Size = Vector2.new(sz, sz)
+					offscreenMarker.Position = Vector2.new(markerPos.X - sz / 2, markerPos.Y - sz / 2)
+					offscreenMarker.Color = col
 					offscreenMarker.Visible = true
 				else
 					offscreenMarker.Visible = false
@@ -4373,6 +4447,21 @@ pcall(function()
 			{ "speed", "velocity", "throttle", "torque", "power", "engine", "drive", "rpm", "gear", "accel", "chassis", "vehicle", "car", "fuel", "gas" })
 	end):AddToolTip("Write the picked/seated vehicle's full structure + its scripts' constants +\nvehicle remotes to workspace/CryptsHBE/ -- the data to find the real speed governor.")
 
+		-- Extended Deep Dive is provided by the optional DeepDive plugin (heavier analysis:
+		-- required-module dumps, remote-arg inference, operator-tool correlation). This
+		-- sub-button drives it when loaded, else points you to enable it.
+		vmGroup:AddButton("Extended Deep Dive", function()
+			local b = getgenv().CryptsHBE
+			local ed = b and b.ExtendedDump
+			if ed and type(ed.vehicle) == "function" then
+				local m = pickedModel()
+				if not m then Library:Notify("Sit in a vehicle or hold-pick one first"); return end
+				pcall(ed.vehicle, m)
+			else
+				Library:Notify("Enable the 'DeepDive' plugin first (Plugins tab)")
+			end
+		end):AddToolTip("Heavier reverse-engineering pass on the picked vehicle (requires the DeepDive plugin):\nrequired-module values, remote-arg inference, turret/operator-tool correlation.")
+
 	local function holdMax(list)
 		for _, f in ipairs(list) do
 			local v = f.read()
@@ -4774,6 +4863,15 @@ pcall(function()
 		"Feature batch: Silent Aim + World + tooling. New SilentAim plugin (hook-free Remote mode that fires the chosen damage remote at the FOV-locked target, plus an opt-in Extreme __namecall-hook mode SCOPED to that one remote that redirects the game's own fire to the target's bone). New World plugin (Fullbright, No Fog, Custom FOV, Infinite Stamina -- all generic client visuals/utility). Vehicle Tuning gained a Speed Boost multiplier (stock top speed x1-5, relative to the captured base). Spectate now RequestStreamAroundAsync's the target's area (and yours on reset) so StreamingEnabled games don't get stuck in 'Gameplay Paused'. The Calibrate tab gained a Weapon Deep-Dump: writes the held weapon's full tree + every Value/attribute + its scripts' read-only string constants + gun-related remotes to workspace/CryptsHBE/, the raw data needed to build tailored per-game weapon hacks (inf-ammo/instant-reload/no-recoil/fire-rate) for server-side games where client value-writing can't work.",
 		"Constrained-value + vehicle-physics pass. The whole script now treats Double/IntConstrainedValue as numeric (a TREK-style game stored ammo as DoubleConstrainedValue, so it was invisible to every scan -> inf-ammo now works). Inf-Ammo re-detects when its cached ammo objects get replaced (respawn re-creates the gun's value folder), fixing 'stops working after reset'. Outline Only now keeps the REAL part enlarged + invisible with a SelectionBox outline (the old proxy part wasn't recognised for hit-reg). Plugin unload now removes the empty tab (Bridge:RemoveTab). Vehicle Tuning gained physics detection: it counts Cylindrical/Hinge wheel motors, springs and body-movers, diagnoses the drive type, shows live actual speed + wheel spin, and adds a Wheel Motor Boost for constraint-driven vehicles with no speed value. Deep-Dump (weapon + new Picked-Vehicle button) now also prints constraint/body-mover physics props. The menu window is wider (720) so labels stop clipping; the changelog viewer is capped + copies full text to clipboard.",
 		"Stability + per-game depth pass. Plugin unload now only HIDES the tab (the previous destroy-tab corrupted LinoriaLib -> tab/cursor glitches); re-enable un-hides it. Inf-Ammo clears its caches on respawn so it re-applies after death. The Learn 'Top -> Inf-Ammo Name' button now skips HUD-only labels and picks the first real value (no more false 'server-side' warning when a writable ammo value exists). Wheel Motor Boost now also force-amplifies the vehicle's velocity toward Multiplier x 60 (the lever that moves a server-driven chassis you own) + raises motor acceleration. The Weapons plugin now reaches stats kept in a config-type ModuleScript (requires config/settings/stat/tune/... modules and writes their matching numeric keys), so Fire Rate / No-Recoil / Reload can hit framework configs (e.g. TREK), and the Deep-Dump now prints those modules' actual values so the exact stat key is visible.",
+		"TREK plugin (fire-rate breakthrough). TREK guns hide every stat behind Config:GetValue(name) -- not instance Values, attributes, or plain table keys -- so the generic Weapons scan found nothing. The new TREK plugin reaches them by WRAPPING GetValue (a pass-through that overrides the return for the keys we want) or, if the module is read-only, by mutating the backing table found in GetValue's upvalues. Fire Rate shrinks WindUp/WindDown (TREK has no FireRate key); also No Recoil / No Spread / Instant Reload. A live readout shows the detected module, active strategy, and current WindUp/WindDown values so you can SEE them drop, plus a Probe button that dumps GetValue + its upvalues to a file for adding new keys.",
+		"Artillery plugin (Pordier siege guns). The game computes ArtilleryStats.TargetPos (the shell's landing point), so the plugin draws a red impact marker + a perspective-correct white scatter-radius circle + an optional shell arc PURELY READ-ONLY (no writes/remotes), plus a 'View Target' overhead camera so you watch the impact zone while W/S/A/D still aim. Detects the emplacement you're mounted on via Humanoid.SeatPart. Rate-of-fire is server-gated (ShootDelay/ServerLastShotTime are server-owned): Auto-Shoot fires the emplacement's own Shoot remote and the readout watches ServerLastShotTime to report accepted shots/sec, so you can SEE whether the server caps it. Everything restores on dismount/respawn/unload.",
+		"Value Editor overhaul ('it's all just changing values'). Inspect Mode outlines the HUD element under your cursor + shows its path/number like a browser inspector (one-click Capture), fixing the 'no number under the cursor' misses with an engine + manual hit-test. The selected value is now HIGHLIGHTED (3D part Highlight or GUI outline) so you see what you're editing. READ-BACK verification on Set Once + Hold reports stuck / REVERTED (server-side) / clamped, so you KNOW if a write works instead of guessing -- and Hold counts server reverts live. If a HUD number has no backing value it still lists the label as display-only text. Kept the green/yellow/red detectability rating (now flags GUI-only text red).",
+		"Visual/core batch. (1) Off-screen ESP markers now pulse (grow + slightly brighten) more as a player gets closer -- a subtle proximity indicator (Proximity Pulse toggle). (2) New Crosshair Mode (1st Person = screen centre, 3rd Person = follows your mouse cursor): the FOV Filter, Legit Mode, Auto-Expand, the FOV circle AND the combat crosshair all use this aim point, so 'only within crosshair' works in free-cursor 3rd-person games and the combat ring follows your cursor (not just on shiftlock). (3) Hit Marker: a small center-tick flash when an enemy's HP drops just after you attack -- deliberately NOT a fill/flash on the target so players behind the one you hit stay visible in crowds ('only when I attack' filter + colour picker).",
+		"Section Loader plugin. Once your setup is dialled in, pick the plugins you use (whitelist), tick Config Finished, and Load Sections unloads every other loaded plugin (frees its connections/memory). An Engagement Logger samples the range you actually meet enemies at and reports avg/min/max + the most-used distance, with one-click Apply Suggested Distance to cut HBE+ESP reach to what you need (less work, smaller detection surface). Optional distance cutback on load.",
+		"Firemodes in Weapon Stats. The Weapons plugin now detects the held gun's firemode (semi / bolt / pump / burst / auto from values/attributes/config/name), can Force Automatic by flipping a firemode VALUE, and has a universal Auto-Fire (rapid-click at an RPM slider) so a semi/bolt/pump gun sprays on games that fire per click client-side -- bind a key to the toggle to hold-spray. Games with no 'Automatic' keyword: 'Learn Held as Automatic' saves the weapon by name (workspace/CryptsHBE/learned_autos.json) so it's recognised next time. Now 15 plugins.",
+		"Deep-dive expansion. The core vehicle Deep-Dump now prints a Vehicle Profile: type guess (plane/heli/tank/armoured/car/ATV/artillery), tracked-vs-wheeled, gun/turret detection + its ammo values. New 'Extended Deep Dive' sub-button (Calibrate) drives a new DeepDive plugin that REQUIRES config modules + reads script UPVALUES (surfacing TREK-style GetValue stats + cached tables the static dump can't), correlates taskbar operator-tools to a vehicle's remotes, dumps custom NON-Tool inventories (the Bleeding Blades case -- character/player/ReplicatedStorage weapons + combat remotes, the data for the Invalid-Attack fix), and an all-remotes dump. Now 16 plugins.",
+		"Artillery extras. The Artillery plugin gained an Elevation Override (push past the aim cap for more range; read-back shows applied vs server-re-clamped) and Inf Turret Ammo (holds any ammo/shell/round value on the emplacement at max, separate from the gun Inf Ammo so it leaves the working one alone). Both restore on dismount/respawn/unload.",
+		"Remote Sniffer plugin (opt-in, DETECTABLE). Logs the game's OUTGOING FireServer/InvokeServer calls WITH their arguments via a read-only, scoped __namecall hook (skips the script's own calls; never alters a call) so you can read the exact payload to replay -- the real damage/hit remote for Bleeding Blades' Invalid-Attack, the artillery Shoot args, shop-purchase remotes. OFF by default, never persisted on (no auto-hook on inject), inert when off or on PANIC, with combat/economy + name filters, a live view and Save-to-file. Now 17 plugins.",
 	}
 	local function verNum(i) return 1 + 0.5 * (i - 1) end
 	local function fmtV(n) return "V" .. (n == math.floor(n) and tostring(math.floor(n)) or tostring(n)) end
@@ -4946,11 +5044,12 @@ pcall(function()
 		"partSpecificSizing","headSize","torsoSize","limbSize","dynamicSizing","smoothTransitions",
 		"transitionSpeed","collisionsToggled","outlineMode","outlineTransparency","maxDistance",
 		"closestTargetsOnly","maxTargets","updateRate","perfAdaptive","perfFpsFloor","randomizationToggled","randomizationAmount",
-		"humanizationToggled","legitModeToggled","seatDisableHBE","seatRadiusMode","seatRadius","seatExitDelayEnabled","seatExitDelay",
+		"humanizationToggled","legitModeToggled","crosshairMode","seatDisableHBE","seatRadiusMode","seatRadius","seatExitDelayEnabled","seatExitDelay",
 		"espNameToggled","espNameSize","espHighlightToggled","espBoxToggled","espBoxScale",
 		"espTracerToggled","espSkeletonToggled","espHealthBarToggled","espNameType","espMaxDistance",
 		-- ESP extras + anti-detect
-		"espRainbow","espRainbowSpeed","espThickness","espDistanceFade","espChamsGlow",
+		"espRainbow","espRainbowSpeed","espThickness","espDistanceFade","espChamsGlow","espOffscreenPulse",
+		"hitMarkerEnabled","hitMarkerAttackOnly",
 		"priorityFlash","smartJitter","maxPlausibleMult","espWhitelisted","espAntiOverlap","espOverlapGap","espHalfRate",
 		"espTeamColors","espOwnTeamFriendly","espFriendlyTeams","espEnemyTeams",
 		-- Add-on modules (unified persistence)
@@ -4970,6 +5069,12 @@ pcall(function()
 		"instantInteract","interactDistance",
 		"fullbright","noFog","customFovEnabled","customFov","infStamina",
 		"weaponNoRecoil","weaponNoDrop","weaponInstantReload","weaponFireRate","weaponFireRateX","weaponFireRateMode",
+		"weaponForceAuto","weaponAutoFire","weaponAutoRPM",
+		"trekFireRate","trekFireRateX","trekFireRateMode","trekNoRecoil","trekNoSpread","trekInstantReload",
+		"artTrajectory","artScatterRadius","artArc","artTargetCam","artCamHeight","artCamBack","artAutoShoot","artShootRate","artDelayOverride","artDelayValue","artElevOverride","artElevExtra","artInfTurret",
+		"secFinished","secApplyDist","secHBEDist","secESPDist",
+		-- RemoteSniffer: persist the filters but NOT sniffActive (never auto-install a hook on inject).
+		"sniffCombatOnly","sniffFilter","sniffShowArgs",
 		"saEnabled","saMethod","saBone","saPriority","saLock","saFOVCircle","saFOV","saMaxDist","saHitChance","saLOS","saIgnoreTeam","saIgnoreWL","saRemote","saArg","saActivate","saRate","saRedirect","saHook",
 		"aimbotEnabled","aimbotTrigger","aimbotPart","aimbotFOV","aimbotSmooth","aimbotVisibleOnly","aimbotIgnoreTeam","aimbotIgnoreWL","aimbotShowFOV",
 		"triggerEnabled","triggerActivate","triggerDelay","triggerIgnoreTeam","norecoilEnabled",
@@ -5028,7 +5133,10 @@ pcall(function()
 			"aimbotEnabled", "triggerEnabled", "norecoilEnabled", "bhopEnabled", "infJumpEnabled",
 			"instantInteract", "vmSpeedMult", "fullbright", "noFog", "customFovEnabled", "infStamina",
 			"saEnabled", "saHook", "weaponNoRecoil", "weaponNoDrop", "weaponInstantReload", "weaponFireRate",
-			"veHold",
+			"trekFireRate", "trekNoRecoil", "trekNoSpread", "trekInstantReload",
+			"artTargetCam", "artAutoShoot", "artDelayOverride", "artElevOverride", "artInfTurret",
+			"veHold", "veInspect", "hitMarkerEnabled", "secFinished", "secApplyDist",
+			"weaponForceAuto", "weaponAutoFire", "sniffActive",
 		}) do
 			pcall(function() if Toggles[k] then Toggles[k]:SetValue(false) end end)
 		end
@@ -5040,6 +5148,69 @@ pcall(function()
 		end
 		Library:Notify("PANIC: every feature off, all hitboxes/visuals restored")
 	end):AddToolTip("One click: turn every feature off and restore all hitboxes/visuals to normal")
+end)
+
+-- ===== Hit Marker: non-occluding center-tick on a confirmed hit =====
+-- Watches every enemy's Humanoid.Health; when one drops shortly after you attack, flash a
+-- small crosshair tick at the aim point. No fill/outline on the target, so a player behind
+-- the one you hit stays fully visible -- the point the user made about crowded fights.
+pcall(function()
+	local hmLines = {}
+	for _ = 1, 4 do
+		local ln = DrawingFallback.new("Line")
+		ln.Thickness = 2; ln.Color = Color3.fromRGB(255, 255, 255); ln.Visible = false
+		hmLines[#hmLines + 1] = ln
+	end
+	local lastAttack = 0
+	UserInputService.InputBegan:Connect(function(input, gp)
+		if not gp and input.UserInputType == Enum.UserInputType.MouseButton1 then lastAttack = tick() end
+	end)
+	local function isEnemy(plr)
+		if plr == lPlayer then return false end
+		local ok, ally = pcall(function()
+			if lPlayer.Team ~= nil or plr.Team ~= nil then return lPlayer.Team == plr.Team end
+			return lPlayer.TeamColor == plr.TeamColor
+		end)
+		return not (ok and ally)
+	end
+	local hpCache = {}
+	local flashUntil = 0
+	local function showMarker(on)
+		if not on then for _, ln in ipairs(hmLines) do ln.Visible = false end return end
+		local c = getAimPoint()
+		local col = (Options.hitMarkerColor and Options.hitMarkerColor.Value) or Color3.fromRGB(255, 255, 255)
+		local r1, r2 = 4, 10
+		local diag = { { 1, 1 }, { -1, 1 }, { 1, -1 }, { -1, -1 } }   -- 4 diagonal ticks
+		for i, d in ipairs(diag) do
+			local ln = hmLines[i]
+			ln.Color = col
+			ln.From = c + Vector2.new(d[1] * r1, d[2] * r1)
+			ln.To = c + Vector2.new(d[1] * r2, d[2] * r2)
+			ln.Visible = true
+		end
+	end
+	RunService.Heartbeat:Connect(function()
+		if not (Toggles.hitMarkerEnabled and Toggles.hitMarkerEnabled.Value) then
+			if flashUntil ~= 0 then showMarker(false); flashUntil = 0 end
+			return
+		end
+		local now = tick()
+		local attackOnly = not (Toggles.hitMarkerAttackOnly and not Toggles.hitMarkerAttackOnly.Value)
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if isEnemy(plr) then
+				local c = plr.Character
+				local hum = c and c:FindFirstChildWhichIsA("Humanoid")
+				if hum then
+					local prev = hpCache[plr]
+					if prev and hum.Health < prev - 0.01 then
+						if (not attackOnly) or (now - lastAttack < 0.5) then flashUntil = now + 0.15 end
+					end
+					hpCache[plr] = hum.Health
+				end
+			end
+		end
+		showMarker(now < flashUntil)
+	end)
 end)
 
 -- ===== [Improvement #15] On-screen watermark (name | tracked | status) =====
@@ -5519,7 +5690,7 @@ pcall(function()
 		if not lroot then return nil end
 		local mode = Options.silentMeleeMode.Value
 		local maxR = Options.silentMeleeRange.Value
-		local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+		local center = getAimPoint()   -- screen centre or cursor, per Crosshair Mode
 		local fov = Options.silentMeleeFOV.Value
 		local best, bestScore = nil, math.huge
 		for _, plr in ipairs(Players:GetPlayers()) do
@@ -5675,11 +5846,13 @@ pcall(function()
 			end
 			locked = smLockCache
 		end
+		-- Show on shiftlock (1st person) OR whenever 3rd-Person cursor mode is on, so the
+		-- combat crosshair follows the cursor too -- not just when shiftlocked.
+		local cursorMode = (Options.crosshairMode and Options.crosshairMode.Value or ""):find("3rd") ~= nil
 		local show = enabled and Toggles.silentMeleeCrosshair and Toggles.silentMeleeCrosshair.Value
-			and UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter
+			and (UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter or cursorMode)
 		if show then
-			local cam = Workspace.CurrentCamera
-			smCross.Position = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+			smCross.Position = getAimPoint()
 			smCross.Color = locked and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 255, 255)
 			smCross.Visible = true
 		else
@@ -6676,6 +6849,11 @@ pcall(function()
 	Bridge:RegisterPluginSource("World",    { tab = "World",      file = "world.lua",     url = RAW .. "world.lua",       desc = "Fullbright, No Fog, Custom FOV, Infinite Stamina (generic client visuals/utility)." })
 	Bridge:RegisterPluginSource("Weapons",  { tab = "Weapons",    file = "weapons.lua",   url = RAW .. "weapons.lua",     desc = "Generic value-based gun hacks: No Recoil/Spread, No Bullet Drop, Instant Reload, Fire Rate." })
 	Bridge:RegisterPluginSource("Values",   { tab = "Values",     file = "valueeditor.lua", url = RAW .. "valueeditor.lua", desc = "Universal value editor: pick any value (or click a HUD number) and set/hold it." })
+	Bridge:RegisterPluginSource("TREK",     { tab = "TREK",       file = "trek.lua",      url = RAW .. "trek.lua",        desc = "TREK-framework gun engine: reaches stats behind Config:GetValue (fire rate via WindUp/WindDown, recoil, reload, spread) by wrapping the accessor or mutating the backing table." })
+	Bridge:RegisterPluginSource("Artillery", { tab = "Artillery", file = "artillery.lua", url = RAW .. "artillery.lua",    desc = "Artillery/siege-mortar assist: reads TargetPos to draw the impact marker + scatter circle + an over-target camera, plus best-effort auto-shoot with server-acceptance readout." })
+	Bridge:RegisterPluginSource("Sections",  { tab = "Sections",   file = "sections.lua",  url = RAW .. "sections.lua",    desc = "Section Loader: keep only the plugins you use (unload the rest), cut HBE/ESP distance, and an engagement-range logger that suggests the distance you actually need." })
+	Bridge:RegisterPluginSource("DeepDive",  { tab = "DeepDive",   file = "deepdive.lua",  url = RAW .. "deepdive.lua",    desc = "Extended reverse-engineering: required-module/upvalue dumps, custom-inventory dumper (non-Tool weapons), all-remotes dump; powers the core's Extended Deep Dive button." })
+	Bridge:RegisterPluginSource("RemoteSniffer", { tab = "Sniffer", file = "remotesniffer.lua", url = RAW .. "remotesniffer.lua", desc = "OPT-IN/DETECTABLE: logs outgoing FireServer/InvokeServer calls + their arguments (read-only namecall hook) so you see the exact payload to replay -- damage remotes, artillery Shoot, shop purchases." })
 
 	-- Plugins load on demand: their tabs + features DON'T EXIST until enabled, so an
 	-- absent Aimbot/Precision tab just looks broken. Make "they're off" obvious with a
