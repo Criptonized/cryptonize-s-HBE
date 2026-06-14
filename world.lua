@@ -6,7 +6,11 @@ local RunService = game:GetService("RunService")
 local Lighting = game:GetService("Lighting")
 local Workspace = workspace
 local lPlayer = Players.LocalPlayer
+local DrawingFallback = getgenv().DrawingFallback
 local pluginCleanup = nil
+local OBJ_W = { "flag", "objective", "capture", "zone", "control", "base", "cap", "point", "spawnpoint", "hardpoint", "intel", "bomb", "hill" }
+local LOOT_W = { "crate", "ammo", "supply", "loot", "cache", "pickup", "resupply", "kit", "box", "medkit", "health", "armor" }
+local function hasW(n, words) n = tostring(n):lower() for _, w in ipairs(words) do if n:find(w, 1, true) then return true end end return false end
 
 return {
 	name = "World", tab = "World", requires = {},
@@ -88,7 +92,80 @@ return {
 			end)
 		end)
 
+		-- ===== World Markers: objective + loot/ammo ESP + teleport =====
+		local mkGroup = ctx:Groupbox("World Markers", "right")
+		mkGroup:AddToggle("worldMarkers", { Text = "Objective + Loot ESP", Default = false, Tooltip = "Draw name + distance markers on objectives (flag/capture/zone) and loot/ammo crates. (Default: OFF)" }); ctx:Control("worldMarkers")
+		mkGroup:AddSlider("worldMarkerDist", { Text = "Marker Distance", Min = 50, Max = 3000, Default = 800, Rounding = 0 }); ctx:Control("worldMarkerDist")
+		local lblMk = mkGroup:AddLabel("Markers: off", true)
+		local function localRoot() local c = lPlayer.Character return c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Head")) end
+		local function nearestMatch(words)
+			local lr = localRoot(); if not lr then return nil end
+			local best, bd
+			local n = 0
+			for _, d in ipairs(Workspace:GetDescendants()) do
+				n = n + 1; if n > 20000 then break end
+				if (d:IsA("BasePart") or d:IsA("Model")) and hasW(d.Name, words) then
+					local ok, pos = pcall(function() return d:IsA("Model") and d:GetPivot().Position or d.Position end)
+					if ok and pos then local m = (pos - lr.Position).Magnitude; if not bd or m < bd then best, bd = pos, m end end
+				end
+			end
+			return best
+		end
+		mkGroup:AddButton("Teleport: Nearest Loot", function()
+			local p = nearestMatch(LOOT_W); local lr = localRoot()
+			if p and lr then pcall(function() lr.CFrame = CFrame.new(p + Vector3.new(0, 5, 0)) end); Library:Notify("TP to nearest loot") else Library:Notify("No loot found") end
+		end)
+		mkGroup:AddButton("Teleport: Nearest Objective", function()
+			local p = nearestMatch(OBJ_W); local lr = localRoot()
+			if p and lr then pcall(function() lr.CFrame = CFrame.new(p + Vector3.new(0, 5, 0)) end); Library:Notify("TP to nearest objective") else Library:Notify("No objective found") end
+		end)
+		-- marker pool (GUI-fallback text), recompute world list ~2Hz, project every frame
+		local POOL = 24
+		local texts = {}
+		for i = 1, POOL do local t = ctx:Track(DrawingFallback.new("Text")); t.Center = true; t.Outline = true; t.Size = 14; t.Visible = false; texts[i] = t end
+		local cache, lastScan = {}, 0
+		local function scanMarkers()
+			cache = {}
+			local lr = localRoot(); if not lr then return end
+			local maxd = Options.worldMarkerDist.Value
+			local n = 0
+			for _, d in ipairs(Workspace:GetDescendants()) do
+				n = n + 1; if n > 20000 or #cache >= POOL then break end
+				if (d:IsA("BasePart") or d:IsA("Model")) then
+					local isLoot, isObj = hasW(d.Name, LOOT_W), hasW(d.Name, OBJ_W)
+					if isLoot or isObj then
+						local ok, pos = pcall(function() return d:IsA("Model") and d:GetPivot().Position or d.Position end)
+						if ok and pos and (pos - lr.Position).Magnitude <= maxd then
+							cache[#cache + 1] = { pos = pos, label = d.Name, color = isLoot and Color3.fromRGB(120, 230, 120) or Color3.fromRGB(255, 210, 80) }
+						end
+					end
+				end
+			end
+		end
+		ctx:Connect(RunService.RenderStepped, function()
+			if not (Toggles.worldMarkers and Toggles.worldMarkers.Value) then
+				for _, t in ipairs(texts) do t.Visible = false end
+				return
+			end
+			local now = tick(); if now - lastScan > 0.5 then lastScan = now; pcall(scanMarkers) end
+			local cam = Workspace.CurrentCamera
+			local lr = localRoot()
+			for i, t in ipairs(texts) do
+				local e = cache[i]
+				if e and cam then
+					local sp = cam:WorldToViewportPoint(e.pos)
+					if sp.Z > 0 then
+						local dist = lr and math.floor((e.pos - lr.Position).Magnitude) or 0
+						t.Text = e.label .. " [" .. dist .. "m]"; t.Color = e.color
+						t.Position = Vector2.new(sp.X, sp.Y); t.Visible = true
+					else t.Visible = false end
+				else t.Visible = false end
+			end
+			pcall(function() lblMk:SetText("Markers: " .. #cache .. " in range") end)
+		end)
+
 		pluginCleanup = function()
+			pcall(function() for _, t in ipairs(texts) do t.Visible = false end end)
 			-- restore everything we may have changed
 			pcall(function()
 				Lighting.Brightness = orig.Brightness; Lighting.GlobalShadows = orig.GlobalShadows
