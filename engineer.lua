@@ -104,7 +104,7 @@ return {
 		end)
 
 		-- Instant Build loop (crosshair raycast or picked model) + read-back
-		local cur, lastResolve = nil, 0
+		local cur, lastResolve, lastApply = nil, 0, 0
 		ctx:Connect(RunService.Heartbeat, function()
 			if not (Toggles.engInstantBuild and Toggles.engInstantBuild.Value) then
 				pcall(function() lblTarget:SetText("Target: (instant build off)"); lblBuild:SetText("Build: -") end)
@@ -126,14 +126,20 @@ return {
 				cur = buildValue(model)
 				pcall(function() lblTarget:SetText("Target: " .. (model and model.Name or "(aim at a building)")) end)
 			end
+			-- Throttle the WRITE to ~5Hz. Writing the build/Health value every frame was the
+			-- lag (and on a server-validated build it just gets reverted -- the read-back says so,
+			-- and that means value-write can't bypass it; Auto-Swing is the only client lever).
 			if cur and cur.v and cur.v.Parent then
-				local before = cur.v.Value
-				pcall(function() cur.v.Value = cur.max end)
-				local after = cur.v.Value
-				pcall(function()
-					local verdict = (math.abs(after - cur.max) < 0.5) and "stuck" or (math.abs(after - before) < 0.5 and "REVERTED (server-side)" or ("-> " .. tostring(after)))
-					lblBuild:SetText(("Build: %s = %s / %s  [%s]"):format(cur.v.Name, tostring(after), tostring(cur.max), verdict))
-				end)
+				if now - lastApply > 0.2 then
+					lastApply = now
+					local before = cur.v.Value
+					pcall(function() cur.v.Value = cur.max end)
+					local after = cur.v.Value
+					pcall(function()
+						local verdict = (math.abs(after - cur.max) < 0.5) and "stuck" or (math.abs(after - before) < 0.5 and "REVERTED -- server-side build (use Auto-Swing)" or ("-> " .. tostring(after)))
+						lblBuild:SetText(("Build: %s = %s / %s  [%s]"):format(cur.v.Name, tostring(after), tostring(cur.max), verdict))
+					end)
+				end
 			else
 				pcall(function() lblBuild:SetText("Build: no progress/Health value on target") end)
 			end

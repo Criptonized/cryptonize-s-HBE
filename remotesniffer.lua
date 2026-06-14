@@ -18,6 +18,7 @@
 -- ============================================================================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local lPlayer = Players.LocalPlayer
 local pluginCleanup = nil
 
 local COMBAT_WORDS = { "hit", "damage", "dmg", "swing", "attack", "block", "parry", "shoot",
@@ -66,9 +67,9 @@ return {
 			local argStr = serArgs(args, argc)
 			local sig = name .. "|" .. method .. "|" .. argStr
 			local e = log[sig]
-			if e then e.count = e.count + 1
+			if e then e.count = e.count + 1; e.rawArgs = args; e.argc = argc   -- refresh latest raw args for replay
 			else
-				e = { name = name, method = method, args = argStr, count = 1, order = nextOrder, inst = self }
+				e = { name = name, method = method, args = argStr, count = 1, order = nextOrder, inst = self, rawArgs = args, argc = argc }
 				nextOrder = nextOrder + 1
 				log[sig] = e; order[#order + 1] = sig
 				if #order > 300 then local old = table.remove(order, 1); log[old] = nil end
@@ -156,6 +157,78 @@ return {
 		end)
 		gView:AddToggle("sniffShowArgs", { Text = "Show args in live view", Default = true, Tooltip = "Include argument values under each remote in the live readout. (Default: ON)" }); C("sniffShowArgs")
 
+		-- ===== Replay (Sniffer -> Fire): re-send a captured call =====
+		-- The lever for server-side stuff: capture the real call (a kill/award remote, the
+		-- gun's Shoot, a legit hit) then replay its EXACT payload -- once, on a loop (farm /
+		-- bolt-bypass), or retargeted to the nearest enemy (silent hit).
+		local gRep = ctx:Groupbox("Replay (Sniffer -> Fire)", "left")
+		local replayMap = {}
+		gRep:AddDropdown("sniffReplaySel", { Text = "Captured call", Values = {}, Multi = false, AllowNull = true, Tooltip = "Pick a captured call to replay. Hit Refresh after capturing." }); C("sniffReplaySel")
+		gRep:AddButton("Refresh List", function()
+			replayMap = {}; local entries = {}
+			for _, sig in ipairs(order) do
+				local e = log[sig]
+				if e and e.rawArgs then
+					local key = ("%s:%s (%s)"):format(e.name, e.method, e.args)
+					if #key > 70 then key = key:sub(1, 70) .. "..." end
+					local k2, i = key, 2; while replayMap[k2] do k2 = key .. " #" .. i; i = i + 1 end
+					replayMap[k2] = e; entries[#entries + 1] = k2
+				end
+			end
+			Options.sniffReplaySel.Values = entries; pcall(function() Options.sniffReplaySel:SetValues() end)
+			Library:Notify("Replay: " .. #entries .. " captured call(s)")
+		end):AddToolTip("Populate the dropdown from the captured log.")
+		gRep:AddToggle("sniffRetarget", { Text = "Retarget to nearest enemy", Default = false, Tooltip = "Swap Player args -> nearest enemy and Vector3 args -> their position (for damage/hit remotes). (Default: OFF)" }); C("sniffRetarget")
+		local lblRep = gRep:AddLabel("Replay: pick a captured call", true)
+
+		local function nearestEnemy()
+			local c = lPlayer.Character; local lr = c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Head"))
+			if not lr then return nil end
+			local best, bpos, bd
+			for _, p in ipairs(Players:GetPlayers()) do
+				if p ~= lPlayer then
+					local ally = false
+					pcall(function() if lPlayer.Team or p.Team then ally = (lPlayer.Team == p.Team) end end)
+					local pc = p.Character; local pr = pc and (pc:FindFirstChild("HumanoidRootPart") or pc:FindFirstChild("Head"))
+					if pr and not ally then local d = (pr.Position - lr.Position).Magnitude; if not bd or d < bd then best, bpos, bd = p, pr.Position, d end end
+				end
+			end
+			return best, bpos
+		end
+		local function buildArgs(e)
+			local args = {}
+			for i = 1, (e.argc or 0) do args[i] = e.rawArgs[i] end
+			if Toggles.sniffRetarget and Toggles.sniffRetarget.Value then
+				local tgt, tpos = nearestEnemy()
+				for i = 1, (e.argc or 0) do
+					local a = args[i]
+					if typeof(a) == "Instance" and a:IsA("Player") and tgt then args[i] = tgt
+					elseif typeof(a) == "Vector3" and tpos then args[i] = tpos end
+				end
+			end
+			return args, (e.argc or 0)
+		end
+		local function replaySelected()
+			local e = replayMap[Options.sniffReplaySel.Value]
+			if not e then Library:Notify("Pick a captured call (Refresh first)"); return false end
+			if not (e.inst and e.inst.Parent) then Library:Notify("That remote is gone"); return false end
+			local args, n = buildArgs(e)
+			pcall(function()
+				if e.inst:IsA("RemoteEvent") then e.inst:FireServer(table.unpack(args, 1, n))
+				elseif e.inst:IsA("RemoteFunction") then e.inst:InvokeServer(table.unpack(args, 1, n)) end
+			end)
+			return true
+		end
+		gRep:AddButton("Replay Once", function() if replaySelected() then pcall(function() lblRep:SetText("Replayed once.") end) end end):AddToolTip("Re-send the captured call's exact payload one time.")
+		gRep:AddToggle("sniffAutoReplay", { Text = "Auto-Replay", Default = false, Tooltip = "Re-send the captured call repeatedly at the rate below (farm / bolt-bypass). (Default: OFF)" }); C("sniffAutoReplay")
+		gRep:AddSlider("sniffReplayRate", { Text = "Replays / sec", Min = 1, Max = 30, Default = 5, Rounding = 0 }); C("sniffReplayRate")
+		local lastReplay = 0
+		ctx:Connect(RunService.Heartbeat, function()
+			if not (Toggles.sniffAutoReplay and Toggles.sniffAutoReplay.Value) then return end
+			local now = tick(); if now - lastReplay < 1 / math.max(1, Options.sniffReplayRate.Value) then return end; lastReplay = now
+			replaySelected()
+		end)
+
 		local howG = ctx:Groupbox("How to Use", "right")
 		howG:AddLabel(
 			"Find the EXACT remote + args the game sends.\n\n" ..
@@ -170,7 +243,16 @@ return {
 			"   to reproduce it.\n\n" ..
 			"Tip: 'Combat/economy only' + Name-contains\n" ..
 			"cut the noise. 'Clear Log' before the action\n" ..
-			"so only the new call shows.",
+			"so only the new call shows.\n\n" ..
+			"REPLAY (Sniffer -> Fire):\n" ..
+			"5. Refresh List, pick the captured call.\n" ..
+			"6. Replay Once (test) -> Auto-Replay to farm\n" ..
+			"   (points via a kill/award remote, or a\n" ..
+			"   bolt gun's Shoot for full-auto).\n" ..
+			"7. 'Retarget to nearest enemy' swaps the\n" ..
+			"   Player/position args -> a silent hit.\n" ..
+			"If the server validates it, replay won't\n" ..
+			"land -- that's a server limit, not a bug.",
 			true)
 
 		pluginCleanup = function() active = false end   -- hook (if installed) becomes inert

@@ -24,6 +24,7 @@ local GRANT = { "award", "grant", "point", "reward", "score", "kill", "earn", "g
 	"cash", "money", "gain", "bounty", "bonus", "claim", "redeem", "credit", "payout", "xp", "frag", "wipe" }
 local function isNum(d) return d:IsA("IntValue") or d:IsA("NumberValue") or d:IsA("DoubleConstrainedValue") or d:IsA("IntConstrainedValue") end
 local function nameHas(n, words) n = tostring(n):lower() for _, w in ipairs(words) do if n:find(w, 1, true) then return true end end return false end
+local function numFromText(t) local s = tostring(t):gsub(",", ""); return tonumber(s:match("%-?%d+%.?%d*")) end
 local function parseArgs(s)
 	local t = {}
 	for part in tostring(s):gmatch("[^,]+") do
@@ -49,13 +50,26 @@ return {
 		gCur:AddDropdown("ecoCurrency", { Text = "Currency value", Values = {}, Multi = false, AllowNull = true, Tooltip = "Scan, then pick the value to watch/farm (cash/points/score/kills...)." }); C("ecoCurrency")
 		gCur:AddButton("Scan Currency", function()
 			curMap = {}; local entries = {}
+			local function addEntry(key, fld)
+				local k2, i = key, 2; while curMap[k2] do k2 = key .. " #" .. i; i = i + 1 end
+				curMap[k2] = fld; entries[#entries + 1] = k2
+			end
 			pcall(function()
 				for _, d in ipairs(lPlayer:GetDescendants()) do
 					if isNum(d) and nameHas(d.Name, CURRENCY) then
-						local key = d.Name .. " = " .. tostring(d.Value)
-						local k2, i = key, 2; while curMap[k2] do k2 = key .. " #" .. i; i = i + 1 end
-						curMap[k2] = { read = function() return d.Value end, path = d:GetFullName() }
-						entries[#entries + 1] = k2
+						addEntry(d.Name .. " = " .. tostring(d.Value), { read = function() return d.Value end, path = d:GetFullName() })
+					end
+				end
+			end)
+			-- Points are often a HUD TextLabel, NOT a leaderstat (Pordier's 122/585), so also
+			-- scan PlayerGui for currency-named text and watch the displayed number directly.
+			pcall(function()
+				local pg = lPlayer:FindFirstChildOfClass("PlayerGui")
+				if pg then
+					for _, d in ipairs(pg:GetDescendants()) do
+						if (d:IsA("TextLabel") or d:IsA("TextButton")) and numFromText(d.Text) and nameHas(d.Name, CURRENCY) then
+							addEntry("[HUD] " .. d.Name .. " = " .. tostring(numFromText(d.Text)), { read = function() return numFromText(d.Text) end, path = d:GetFullName() })
+						end
 					end
 				end
 			end)

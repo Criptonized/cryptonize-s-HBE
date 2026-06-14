@@ -73,6 +73,7 @@ return {
 		local found = {}        -- key -> { fld, rate, reason, inst }
 		local selField = nil
 		local selInst = nil
+		local lastSuggested = nil   -- plugin suggested for the hovered/selected value (hoisted for OnChanged)
 		local lastHold = 0
 
 		-- ===== overlay for GUI/part highlighting (web-inspector style) =====
@@ -242,6 +243,7 @@ return {
 			highlightSelected()
 			if entry then
 				local sp, snote = suggestPlugin(selInst and selInst.Name or selField.path)
+				lastSuggested = sp
 				pcall(function() veInfo:SetText(("Selected: %s\nCurrent: %s\nRating: %s -- %s%s"):format(
 					selField.path, tostring(selField.read()), entry.rate:upper(), entry.reason,
 					sp and ("\nBetter handled by: " .. sp .. " plugin (" .. snote .. ")") or "")) end)
@@ -307,6 +309,14 @@ return {
 		pickG:AddToggle("veInspect", { Text = "Inspect Mode (hover)", Default = false, Tooltip = "Outlines the HUD element under your cursor (animated) + shows its path/number. The\ntarget LOCKS when you move onto the menu, so Capture grabs what you were pointing at. (Default: OFF)" }); ctx:Control("veInspect")
 		local lblHover = pickG:AddLabel("Hover: -", true)
 		local lastHover = nil
+		pickG:AddButton("Enable Suggested Plugin", function()
+			local B = getgenv().CryptsHBE
+			if not lastSuggested then Library:Notify("No plugin suggested for the current value"); return end
+			if B and B.EnablePlugin then
+				local ok = pcall(function() return B:EnablePlugin(lastSuggested) end)
+				Library:Notify(ok and ("Enabled " .. lastSuggested .. " plugin") or ("Couldn't enable " .. lastSuggested))
+			end
+		end):AddToolTip("One click: load the plugin that handles the kind of value you're hovering/selecting (ammo->Inf Ammo, points->Economy, etc.).")
 		local function captureHovered()
 			if not (lastHover and lastHover.Parent) then Library:Notify("Nothing locked -- turn on Inspect Mode + point at a number"); return end
 			local num = numFromText(lastHover.Text)
@@ -390,6 +400,7 @@ return {
 				boxTo(hoverBox, target)
 				pcall(function() if hoverBox:FindFirstChildOfClass("UIStroke") then hoverBox:FindFirstChildOfClass("UIStroke").Color = col end end)
 				local sp, snote = suggestPlugin(target.Name)
+				lastSuggested = sp
 				pcall(function()
 					local locked = (o == nil)   -- cursor has left the element (e.g. on the menu)
 					local hint = sp and ("\n   \u{2192} " .. sp .. " plugin: " .. snote) or ""

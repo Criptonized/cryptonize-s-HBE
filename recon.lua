@@ -288,7 +288,7 @@ local function antiCheat()
 	pcall(function()
 		local n = 0
 		for _, d in ipairs(game:GetDescendants()) do
-			if (d:IsA("LocalScript") or d:IsA("Script") or d:IsA("ModuleScript")) and n < 80 and has(d.Name, { "anti", "guard", "detect", "cheat", "security", "ban", "monitor", "validate" }) then
+			if (d:IsA("LocalScript") or d:IsA("Script") or d:IsA("ModuleScript")) and n < 80 and not d:GetFullName():find("CorePackages") and not d:GetFullName():find("CoreGui") and has(d.Name, { "anti", "guard", "detect", "cheat", "security", "ban", "kick" }) then
 				n = n + 1; L[#L + 1] = "  " .. d.ClassName .. " '" .. d.Name .. "' @ " .. d:GetFullName()
 			end
 		end
