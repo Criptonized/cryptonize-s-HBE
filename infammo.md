@@ -1,0 +1,6 @@
+# Inf Ammo plugin (`infammo.lua`)
+**What:** Adaptive infinite ammo with a 5-strategy + learning resolver and a gun picker. Refills numeric ammo fields on equipped gun(s) each tick.
+**Use:** Plugins → Enable InfAmmo → "Inf Ammo" tab. Enable, Apply-to-Any-Tool or register specific guns, Refill Amount, optional Manual Ammo Name (extends detection to a custom value name). A label shows which detection method hit.
+**How:** strategies tried in order — named values, attributes, Configuration folders, player-side values — then a learning detector that adopts any number that drops when you fire. Caches the winner per gun. The player-side scan is scoped to **Backpack / leaderstats / Character only** (never PlayerGui/PlayerScripts) so it can't write into the menu's own GUI and corrupt it.
+**Deps:** globals + `Players` + `RunService` + `getgenv().CryptsHBE`. **Teardown:** `unload` disconnects the refill Heartbeat.
+**Confidence:** Medium-High — client-side only. **Server-side-ammo games can't be helped:** if the Calibrate → Learn engine shows the ammo change only in a `HUD:` label (a TextLabel) and in NO NumberValue/IntValue/attribute, the real ammo lives server-side (e.g. BRM5-style "30 | 195" displays) and there is nothing client-side to write — inf-ammo will not work, and the Manual Ammo Name expects a real value/attribute name, not the on-screen number or caliber.
