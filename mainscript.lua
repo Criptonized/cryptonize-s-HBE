@@ -3796,6 +3796,12 @@ pcall(function()
 		"Remote Sniffer -> Fire (replay). Captured calls now store their raw args, so you can Replay Once / Auto-Replay (rate) a captured call -- the one lever for server-side things value-writes can't touch: farm points (replay a kill/award remote like KilledBy), bolt -> pseudo-full-auto (replay the gun's Shoot), or the Bleeding Blades legit-hit replay. 'Retarget to nearest enemy' swaps Player/Vector3 args to turn a captured hit into a silent one. If the server validates the call it won't land (server limit, not a bug).",
 		"Smart Setup + hint-jump. Calibrate is now the suite's brain: 'Smart Setup -> Recommend Plugins' fingerprints the game (frameworks incl. TREK, guns, vehicle seats, shields/melee, currency, build tools) and lists the plugins it needs; 'Enable Recommended' loads them all in one click. The Value Editor's plugin hint gained an 'Enable Suggested Plugin' button (one click to load the tool for the hovered/selected value's kind). Both make per-game setup near-automatic.",
 		"QOL batch. (1) Performance/Health monitor: live FPS + Lua memory (MB) + plugins loaded/total + tracked + status, shown on the watermark AND a colour-coded 'Health' label (green/yellow/red by FPS) in Performance; Bridge.FPS() exposed. (2) Plugin Manager QOL: per-plugin status colour (green loaded / red failed / grey off), Enable ALL / Disable ALL, and file-based Auto-Enable-on-inject (save your favourite plugins -> they auto-load every run, via workspace/CryptsHBE/autoenable.json). (3) Keybind QOL: bind Toggle HBE + Toggle ESP (PANIC already bindable) in the Keybinds tab.",
+		"Config Presets (Settings -> Config Presets). Three one-click bundles: Legit (small crosshair/FOV-gated hitbox, jitter on, nearby-only, minimal ESP, every rage/combat feature off), Rage (big hitbox on everyone, full ESP, hit marker + combat assists on), Visuals-only (hitbox + every combat feature off, full ESP, MasterToggle stays on so ESP keeps running). Each writes a curated map through the safe (Options/Toggles):SetValue path (nil-guarded -> keys for unloaded plugins are skipped) and reports 'N set / M skipped'. Save/Load-ALL is still the SaveManager named configs in Configuration Profiles.",
+		"AnimCancel plugin (tab 'Anim', 23rd plugin). Cancels or speeds up the per-shot FIRING/RELOAD animation so it stops gating your rate of fire -- for artillery, bolt-action guns and melee. Collects animators from you + your held tool + the seated emplacement/vehicle model (artillery's shoot anim plays on the emplacement, not you), then Stop()s or AdjustSpeed()s any track matching Keywords / Learned-ids / All-but-movement. 'Learn Action' captures the shot anim id when you fire once; 'Scan Playing Tracks' writes everything currently playing to file. Direct API (GetPlayingAnimationTracks + Stop/AdjustSpeed), NOT a hook -> detection-safe. HONEST: only wins if the gun gates on the track client-side; a fixed task.wait or a server cooldown (ServerLastShotTime / LastShotServer -- Pordier artillery + bolt both have one) still caps you. Confirm via your weapon's real rate / the Artillery 'Accepted' readout.",
+		"Dot ESP plugin (tab 'Dots', 24th plugin). Small team-coloured dots floating above players' heads -- like the squad-ping some games put on a held key. Toggle teammates and/or enemies, dot size + float height + its OWN max distance (independent of HBE), team colours via the core relationshipColor. Bound to a toggle hotkey (default V) through the central Keybinds tab. Read-only WorldToViewportPoint projection on a filled-circle pool; honours Streamer hide + menu auto-hide. Keys in PG_KEYS + dotEspEnabled in PANIC.",
+		"Artillery: Aim Ring. New 'Aim Ring (where you look)' toggle draws the scatter/landing ring at the terrain point your CAMERA is aimed at (raycast from the view), instead of only the game's ArtilleryStats.TargetPos -- so the radius shows LIVE as you turn the gun and works even when TargetPos is empty/zero (which is why nothing showed before off-target). Ground-conformed like the existing ring; the centre label reads AIM vs IMPACT. Arc + View-Target camera still use the real TargetPos.",
+		"Economy/Sections/Weapons batch. (1) Economy 'Rank Remotes by points': fires EACH scanned grant remote once, measures the watched currency's delta, ranks them and auto-selects the winner; 'Farm Best' farms the top one. Honest -- all +0 means server-authoritative or wrong args. (2) Section Loader engagement logger now tracks PER-HITBOX: classifies which body part of the nearest enemy is closest to your aim ray (Head/Torso/Limb), reporting average engagement range + most-aimed part per class, so you can size headSize/torsoSize/limbSize to where you actually fight. (3) Weapons 'Find Fire-Rate Values (wide)': read-only scan listing every rate/cooldown/RPM value across the held tool + character + ReplicatedStorage config modules with full paths -- because the Fire Rate Boost only writes tool-local values, but bolt-gun cooldowns usually live in an RS module. Locate it, then write it (Fire Rate Boost or Value Editor). 'It's all just changing values' once you know which one.",
+		"Bleeding Blades batch (decoded the S4 dumps). New BleedingBlades plugin (tab 'Blades', 25th plugin): Model Picker (aim + pick any humanoid/horse/object -> dump its structure + the Combat remotes that act on it, for spectating); Combat Remotes (fire ReplicatedStorage.Combat.PHit [hit] / CreateProjectile [arrow] / Mount [horse] with sniffed args -> the bypass/arrow lever); Server Monitor (read-only listen to the game's message remotes -> shows the 'Server:' validator messages = Invalid Attack / Fall damage / kills); subtle Walk Speed (capped, HeightDetect-aware); experimental Auto-Block (holds MB2 while a DirectionUI telegraph shows) + Dump DirectionUI to map the directional parry. Plus: Vehicle ESP now auto-classifies HORSES (Workspace.Ride / Saddle seats -> 'Horse' type); World Markers now flag bolt/arrow REFILL stations. HONEST: melee is server-validated (no touch conns) so HBE stays off here; PHit/CreateProjectile replay only lands if the server doesn't re-validate -- capture their args with the Sniffer (filter OFF).",
 	}
 	local function verNum(i) return 1 + 0.5 * (i - 1) end
 	local function fmtV(n) return "V" .. (n == math.floor(n) and tostring(math.floor(n)) or tostring(n)) end
@@ -3995,7 +4001,7 @@ pcall(function()
 		"weaponNoRecoil","weaponNoDrop","weaponInstantReload","weaponFireRate","weaponFireRateX","weaponFireRateMode",
 		"weaponForceAuto","weaponAutoFire","weaponAutoRPM",
 		"trekFireRate","trekFireRateX","trekFireRateMode","trekNoRecoil","trekNoSpread","trekInstantReload",
-		"artTrajectory","artScatterRadius","artArc","artTargetCam","artCamHeight","artCamBack","artAutoShoot","artShootRate","artDelayOverride","artDelayValue","artElevOverride","artElevExtra","artInfTurret",
+		"artTrajectory","artAimRing","artScatterRadius","artArc","artTargetCam","artCamHeight","artCamBack","artAutoShoot","artShootRate","artDelayOverride","artDelayValue","artElevOverride","artElevExtra","artInfTurret",
 		"secFinished","secApplyDist","secHBEDist","secESPDist",
 		-- RemoteSniffer: persist the filters but NOT sniffActive (never auto-install a hook on inject).
 		"sniffCombatOnly","sniffFilter","sniffShowArgs","sniffRetarget","sniffAutoReplay","sniffReplayRate",
@@ -4006,6 +4012,9 @@ pcall(function()
 		"triggerEnabled","triggerActivate","triggerDelay","triggerIgnoreTeam","norecoilEnabled",
 		"aimbotPredict","aimbotBulletSpeed","aimbotDropComp",
 		"radarEnabled","radarRange","radarSize","bhopEnabled","infJumpEnabled","autoSoften","persistEnabled","persistUrl",
+			"animCancelEnabled","animMode","animSpeed","animFilter","animKeywords",
+			"dotEspEnabled","dotEspAllies","dotEspEnemies","dotEspTeamColor","dotEspSize","dotEspHeight","dotEspDist",
+			"bbWalkEnabled","bbWalkSpeed","bbServerMonitor","bbCombatArgs",
 	}
 	local g = profilesTab:AddLeftGroupbox("Per-Game Profile")
 	g:AddLabel("Game PlaceId: " .. tostring(game.PlaceId), true)
@@ -4063,7 +4072,8 @@ pcall(function()
 			"artTargetCam", "artAutoShoot", "artDelayOverride", "artElevOverride", "artInfTurret",
 			"veHold", "veInspect", "hitMarkerEnabled", "secFinished", "secApplyDist",
 			"weaponForceAuto", "weaponAutoFire", "sniffActive", "engAutoSwing", "engInstantBuild",
-			"ecoAutoFarm", "worldMarkers", "sniffAutoReplay",
+			"ecoAutoFarm", "worldMarkers", "sniffAutoReplay", "animCancelEnabled", "dotEspEnabled",
+			"bbWalkEnabled", "bbAutoBlock", "bbServerMonitor",
 		}) do
 			pcall(function() if Toggles[k] then Toggles[k]:SetValue(false) end end)
 		end
@@ -4075,6 +4085,84 @@ pcall(function()
 		end
 		Library:Notify("PANIC: every feature off, all hitboxes/visuals restored")
 	end):AddToolTip("One click: turn every feature off and restore all hitboxes/visuals to normal")
+end)
+
+-- ===== Config Presets (Legit / Rage / Visuals-only) =====
+-- One-click curated bundles. Each preset writes an explicit map of core control
+-- values through the LinoriaLib setter ((Options[k] or Toggles[k]):SetValue) --
+-- the same nil-guarded path PANIC and the per-game profile use, so keys for
+-- plugins that aren't loaded are simply skipped. These are buttons, not toggles,
+-- so there's nothing to persist. Save/Load-ALL already lives in the
+-- "Configuration Profiles" groupbox above (SaveManager named configs).
+pcall(function()
+	local presetGroupbox = profilesTab:AddLeftGroupbox("Config Presets")
+	presetGroupbox:AddLabel("One-click bundles -- tweak after.", true)
+	presetGroupbox:AddLabel("Save/Load ALL = Configuration Profiles.", true)
+
+	local function applyPreset(label, map)
+		local set, skip = 0, 0
+		for k, v in pairs(map) do
+			local c = Options[k] or Toggles[k]
+			if c and pcall(function() c:SetValue(v) end) then
+				set = set + 1
+			else
+				skip = skip + 1
+			end
+		end
+		Library:Notify(("Preset '%s': %d set, %d skipped"):format(label, set, skip))
+	end
+
+	-- Legit: subtle, low-detectability. Small hitbox, crosshair/FOV-gated, jittered,
+	-- nearby only; minimal ESP (names + health); every rage/combat feature OFF.
+	local LEGIT = {
+		MasterToggle = true, extenderToggled = true, outlineMode = false,
+		extenderSize = 8, maxDistance = 250,
+		legitModeToggled = true, fovFilterToggled = true,
+		randomizationToggled = true, humanizationToggled = true,
+		hitMarkerEnabled = false,
+		espNameToggled = true, espHealthBarToggled = true,
+		espHighlightToggled = false, espBoxToggled = false,
+		espTracerToggled = false, espSkeletonToggled = false,
+		espMaxDistance = 500,
+		precisionEnabled = false, silentMeleeEnabled = false, silentMeleeAura = false,
+		aimbotEnabled = false, triggerEnabled = false, saEnabled = false,
+		weaponForceAuto = false,
+	}
+
+	-- Rage: maximum coverage + every visual on; combat assists ON (nil-guarded, so
+	-- they only fire for the plugins you've actually loaded). Loud by design.
+	local RAGE = {
+		MasterToggle = true, extenderToggled = true, outlineMode = false,
+		extenderSize = 80, maxDistance = 1000,
+		legitModeToggled = false, fovFilterToggled = false,
+		randomizationToggled = false, humanizationToggled = false,
+		hitMarkerEnabled = true,
+		espNameToggled = true, espHealthBarToggled = true,
+		espHighlightToggled = true, espBoxToggled = true,
+		espTracerToggled = true, espSkeletonToggled = true,
+		espMaxDistance = 1000,
+		silentMeleeEnabled = true, aimbotEnabled = true, triggerEnabled = true,
+	}
+
+	-- Visuals-only: full ESP, ZERO hitbox/combat. MasterToggle stays ON so the ESP
+	-- loop keeps running; the hitbox extender and every combat feature are OFF.
+	local VISUALS = {
+		MasterToggle = true, extenderToggled = false, outlineMode = false,
+		precisionEnabled = false,
+		legitModeToggled = false, fovFilterToggled = false, hitMarkerEnabled = false,
+		espNameToggled = true, espHealthBarToggled = true,
+		espHighlightToggled = true, espBoxToggled = true,
+		espTracerToggled = true, espSkeletonToggled = true,
+		espMaxDistance = 1000,
+		silentMeleeEnabled = false, silentMeleeAura = false,
+		aimbotEnabled = false, triggerEnabled = false, saEnabled = false,
+		weaponForceAuto = false, infAmmoEnabled = false,
+	}
+
+	presetGroupbox:AddButton("Apply Legit", function() applyPreset("Legit", LEGIT) end):AddToolTip("Subtle: small crosshair/FOV-gated hitbox, jitter on, nearby only, minimal ESP, all rage features off.")
+	presetGroupbox:AddButton("Apply Rage", function() applyPreset("Rage", RAGE) end):AddToolTip("Loud: big hitbox on everyone, full ESP, hit marker + combat assists on (if those plugins are loaded).")
+	presetGroupbox:AddButton("Apply Visuals-only", function() applyPreset("Visuals-only", VISUALS) end):AddToolTip("ESP only: hitbox extender + every combat feature OFF, all visuals on. Safest.")
+	print("[Presets] Legit / Rage / Visuals-only ready")
 end)
 
 -- ===== Hit Marker: non-occluding center-tick on a confirmed hit =====
@@ -5864,6 +5952,9 @@ pcall(function()
 	Bridge:RegisterPluginSource("Vehicle",   { tab = "Vehicle/Misc", file = "vehicle.lua", url = RAW .. "vehicle.lua",     desc = "The Vehicle/Misc tab (extracted from the core to shrink it): Vehicle Assist + Tool Expander + Manual Vehicle HBE + Vehicle Modify/Tuning + Vehicle ESP. Enable to get the tab back." })
 	Bridge:RegisterPluginSource("Combat",    { tab = "Combat",     file = "combat.lua",    url = RAW .. "combat.lua",      desc = "Gate for the inline Combat tab (Weapon Reader, Target Groups, Silent Melee, Tool Hitbox Editor). Code stays in the core; this shows the tab + makes its features active only while enabled." })
 	Bridge:RegisterPluginSource("Economy",   { tab = "Economy",    file = "economy.lua",   url = RAW .. "economy.lua",     desc = "Currency detection + point-farm: watch a currency value (classifies auto/server vs your-fire gains), find the grant remote, and Fire/Auto-Farm it with read-back to prove if it pays out." })
+	Bridge:RegisterPluginSource("AnimCancel", { tab = "Anim",      file = "animcancel.lua", url = RAW .. "animcancel.lua",  desc = "Cancel/speed firing + reload animations so the per-shot animation stops gating your fire rate (artillery, bolt-action, melee). Direct API, no hook. Learn the action anim, then Cancel or Speed-up it. Client lever only -- confirm via your weapon's real rate." })
+	Bridge:RegisterPluginSource("DotESP",    { tab = "Dots",      file = "dotesp.lua",    url = RAW .. "dotesp.lua",      desc = "Dot ESP: small team-coloured dots floating above players' heads (teammates and/or enemies), on a toggle hotkey (default V). Own distance, honours Streamer + menu-hide. Read-only screen projection." })
+	Bridge:RegisterPluginSource("BleedingBlades", { tab = "Blades", file = "bleedingblades.lua", url = RAW .. "bleedingblades.lua", desc = "Bleeding Blades toolkit: pick any model -> its remotes, fire Combat remotes (PHit hit / CreateProjectile arrow / Mount), watch server messages (Invalid Attack / Fall damage), subtle walk speed, and an experimental DirectionUI-based auto-block for the directional parry." })
 
 	-- Plugins load on demand: their tabs + features DON'T EXIST until enabled, so an
 	-- absent Aimbot/Precision tab just looks broken. Make "they're off" obvious with a
