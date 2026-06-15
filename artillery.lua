@@ -54,6 +54,7 @@ return {
 
 		local gVis = ctx:Groupbox("Trajectory", "left")
 		gVis:AddToggle("artTrajectory", { Text = "Show Landing", Default = true, Tooltip = "Read-only: marks ArtilleryStats.TargetPos (where the shell lands) + a scatter circle. (Default: ON)" }); C("artTrajectory")
+		gVis:AddToggle("artAimRing", { Text = "Aim Ring (where you look)", Default = false, Tooltip = "Draw the scatter ring at the terrain point your CAMERA is aimed at (raycast) instead of the game's TargetPos -- so it shows live as you turn, even with no TargetPos yet. (Default: OFF)" }); C("artAimRing")
 		gVis:AddSlider("artScatterRadius", { Text = "Scatter Radius", Min = 1, Max = 120, Default = 24, Rounding = 0, Tooltip = "Studs. The shell isn't pinpoint -- set this to match the spread you observe, so the white circle = the danger zone." }); C("artScatterRadius")
 		gVis:AddToggle("artArc", { Text = "Show Arc (approx)", Default = false, Tooltip = "Draws an approximate shell path from the muzzle to the landing point. Cosmetic -- the landing point is the accurate part. (Default: OFF)" }); C("artArc")
 
@@ -157,6 +158,19 @@ return {
 			origDelay, delayArt = nil, nil
 		end
 
+		local function aimOrTarget(cam, art, targetPos)
+			-- "Aim Ring": raycast from the camera along where you LOOK to the terrain and use
+			-- that as the ring centre, so the landing radius follows your view live (works even
+			-- before the game computes TargetPos). Otherwise the real ArtilleryStats.TargetPos.
+			if Toggles.artAimRing and Toggles.artAimRing.Value and cam then
+				local rpAim = RaycastParams.new()
+				rpAim.FilterType = Enum.RaycastFilterType.Exclude
+				pcall(function() rpAim.FilterDescendantsInstances = { lPlayer.Character, art } end)
+				local hitAim = Workspace:Raycast(cam.CFrame.Position, cam.CFrame.LookVector * 6000, rpAim)
+				if hitAim then return hitAim.Position end
+			end
+			return targetPos
+		end
 		local function toScreen(cam, world)
 			local sp = cam:WorldToViewportPoint(world)
 			return Vector2.new(sp.X, sp.Y), sp.Z > 0
@@ -194,7 +208,8 @@ return {
 			end)
 
 			-- ===== trajectory visuals (read-only) =====
-			if Toggles.artTrajectory.Value and targetPos then
+			local ringCenter = aimOrTarget(cam, art, targetPos)
+			if Toggles.artTrajectory.Value and ringCenter then
 				local R = Options.artScatterRadius.Value
 				-- Recompute ground-conformed ring points at ~10Hz (raycast straight down per
 				-- point so the circle sits on terrain instead of floating at the target's Y),
@@ -206,15 +221,15 @@ return {
 					pcall(function() rp.FilterDescendantsInstances = { lPlayer.Character, art } end)
 					for i = 0, RING_N do
 						local a = (i % RING_N) / RING_N * math.pi * 2
-						local x, z = targetPos.X + math.cos(a) * R, targetPos.Z + math.sin(a) * R
-						local hit = Workspace:Raycast(Vector3.new(x, targetPos.Y + 80, z), Vector3.new(0, -400, 0), rp)
-						ringWorld[i + 1] = Vector3.new(x, (hit and hit.Position.Y or targetPos.Y) + 0.2, z)
+						local x, z = ringCenter.X + math.cos(a) * R, ringCenter.Z + math.sin(a) * R
+						local hit = Workspace:Raycast(Vector3.new(x, ringCenter.Y + 80, z), Vector3.new(0, -400, 0), rp)
+						ringWorld[i + 1] = Vector3.new(x, (hit and hit.Position.Y or ringCenter.Y) + 0.2, z)
 					end
 				end
 				-- scatter ring (perspective-correct ground circle)
 				local pts, on = {}, {}
 				for i = 0, RING_N do
-					local s, vis = toScreen(cam, ringWorld[i + 1] or targetPos)
+					local s, vis = toScreen(cam, ringWorld[i + 1] or ringCenter)
 					pts[i + 1] = s; on[i + 1] = vis
 				end
 				for i = 1, RING_N do
@@ -226,14 +241,14 @@ return {
 					end
 				end
 				-- centre marker + cross + distance text
-				local sc, visc = toScreen(cam, targetPos)
+				local sc, visc = toScreen(cam, ringCenter)
 				if visc then
 					marker.Position = sc; marker.Visible = true
 					crossH.From = sc - Vector2.new(9, 0); crossH.To = sc + Vector2.new(9, 0); crossH.Visible = true
 					crossV.From = sc - Vector2.new(0, 9); crossV.To = sc + Vector2.new(0, 9); crossV.Visible = true
 					local root = art:FindFirstChild("Root") or art:FindFirstChild("Muzzle", true)
-					local dist = root and (targetPos - root.Position).Magnitude or 0
-					mkText.Text = ("IMPACT  %dm"):format(dist)
+					local dist = root and (ringCenter - root.Position).Magnitude or 0
+					mkText.Text = ((Toggles.artAimRing and Toggles.artAimRing.Value) and "AIM  %dm" or "IMPACT  %dm"):format(dist)
 					mkText.Position = sc + Vector2.new(0, 16); mkText.Visible = true
 				else
 					marker.Visible = false; crossH.Visible = false; crossV.Visible = false; mkText.Visible = false

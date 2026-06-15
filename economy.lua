@@ -120,6 +120,66 @@ return {
 		gFarm:AddToggle("ecoAutoFarm", { Text = "Auto-Farm", Default = false, Tooltip = "Fire the grant remote repeatedly at the rate below. (Default: OFF)" }); C("ecoAutoFarm")
 		gFarm:AddSlider("ecoRate", { Text = "Fires / sec", Min = 1, Max = 30, Default = 5, Rounding = 0 }); C("ecoRate")
 
+		-- ===== Rank remotes by points-per-fire =====
+		-- "Which remote makes the most points": fire EACH scanned grant remote once, measure the
+		-- watched currency's delta, rank them, auto-select the winner. Honest about noise:
+		-- automatic server grants (kills/time) during the test can inflate a result, and all +0
+		-- means none are client-grantable (server-authoritative) or the args are wrong.
+		local gRank = ctx:Groupbox("Rank Remotes", "right")
+		local lblRank = gRank:AddLabel("Rank: pick a currency + Scan remotes,\nthen test which one pays the most.", true)
+		local ranking, rankBusy = {}, false
+		local function rankRemotes()
+			if rankBusy then return end
+			if not watched then Library:Notify("Pick a currency to watch first"); return end
+			local keys = {}
+			for k in pairs(remMap) do keys[#keys + 1] = k end
+			if #keys == 0 then Library:Notify("Scan Grant Remotes first"); return end
+			table.sort(keys)
+			rankBusy = true
+			local args = parseArgs(Options.ecoArgs.Value or "")
+			task.spawn(function()
+				local results = {}
+				for idx, k in ipairs(keys) do
+					local r = remMap[k]
+					local before = watched.read()
+					pcall(function() lblRank:SetText(("Ranking %d/%d:\n%s"):format(idx, #keys, k)) end)
+					pcall(function()
+						if r:IsA("RemoteEvent") then r:FireServer(table.unpack(args))
+						elseif r:IsA("RemoteFunction") then r:InvokeServer(table.unpack(args)) end
+					end)
+					task.wait(0.35)
+					local after = watched.read()
+					local gain = (type(after) == "number" and type(before) == "number") and (after - before) or 0
+					results[#results + 1] = { key = k, gain = gain }
+				end
+				table.sort(results, function(a, b) return a.gain > b.gain end)
+				ranking = results
+				local lines = {}
+				for i = 1, math.min(5, #results) do lines[#lines + 1] = ("%d) +%s  %s"):format(i, tostring(results[i].gain), results[i].key) end
+				local best = results[1]
+				if best and best.gain > 0 then
+					pcall(function() Options.ecoRemote:SetValue(best.key) end)
+					pcall(function() lblRank:SetText("Best -> selected:\n" .. table.concat(lines, "\n")) end)
+					Library:Notify("Best grant remote: " .. best.key .. " (+" .. best.gain .. ")")
+				else
+					pcall(function() lblRank:SetText("No remote paid out (all +0).\nLikely server-side, or wrong args --\nsniff a real gain for the exact args.") end)
+					Library:Notify("No remote paid out -- server-side or wrong args")
+				end
+				rankBusy = false
+			end)
+		end
+		gRank:AddButton("Rank by Points (fires each)", rankRemotes):AddToolTip("Fires EACH scanned grant remote once and measures how much the watched currency changed, then ranks them + auto-selects the best. It really does fire every candidate -- use sniffed args. Server grants during the test add noise.")
+		gRank:AddButton("Farm Best", function()
+			local best = ranking[1]
+			if best and best.gain > 0 then
+				pcall(function() Options.ecoRemote:SetValue(best.key) end)
+				if Toggles.ecoAutoFarm then pcall(function() Toggles.ecoAutoFarm:SetValue(true) end) end
+				Library:Notify("Auto-Farming best: " .. best.key)
+			else
+				Library:Notify("Rank first (no paying remote found)")
+			end
+		end):AddToolTip("Select the top-ranked remote and turn on Auto-Farm.")
+
 		local gWatch = ctx:Groupbox("Detection / Read-back", "right")
 		local lblGen = gWatch:AddLabel("Generation: watching...", true)
 

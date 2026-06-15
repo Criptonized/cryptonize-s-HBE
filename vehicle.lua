@@ -991,7 +991,7 @@ pcall(function()
 	g:AddToggle("vehicleEspAutoTrack", { Text = "Auto-Track Vehicles", Default = true, Tooltip = "Continuously find drivable vehicles (anything with a\nVehicleSeat) and keep the list LIVE -- new spawns are added,\ndestroyed/despawned ones are removed automatically, so it\nnever shows a car you spawned ages ago. (Default: ON)" })
 	g:AddToggle("vehicleEspWheelCars", { Text = "Detect Wheel-Cars (no seat)", Default = false, Tooltip = "VEH-ESP2: also track cars that are a single model with no\nVehicleSeat (just tires + body) -- e.g. other players' cars.\nHeuristic (>=2 wheel/tire parts); may occasionally over-match. (Default: OFF)" })
 	g:AddDropdown("vehicleEspList", { Text = "Registered Vehicles", Values = {}, Multi = false, AllowNull = true, Tooltip = "Vehicles currently tracked. (Default: none)" })
-	g:AddDropdown("vehicleEspType", { Text = "Mark As", Values = { "Car", "Helicopter", "Boat", "Plane" }, Default = "Car", Multi = false, AllowNull = false, Tooltip = "Type to tag the selected vehicle with (saved to disk). (Default: Car)" })
+	g:AddDropdown("vehicleEspType", { Text = "Mark As", Values = { "Car", "Horse", "Helicopter", "Boat", "Plane" }, Default = "Car", Multi = false, AllowNull = false, Tooltip = "Type to tag the selected vehicle with (saved to disk). (Default: Car)" })
 
 	local registered = {}     -- { { model=, name=, type= }, ... }
 	local vehicleTypes = {}   -- [name] = type (persisted)
@@ -1022,9 +1022,22 @@ pcall(function()
 		Options.vehicleEspList:SetValues()
 	end
 	local function isRegistered(m) for _, e in ipairs(registered) do if e.model == m then return true end end return false end
+	-- A mount/horse = named horse/steed/pony/mount, OR has a "Saddle" VehicleSeat, OR
+	-- lives under a "Ride" folder (Bleeding Blades parks horses in Workspace.Ride.<name>).
+	local function looksLikeHorse(m)
+		if not (m and m:IsA("Model")) then return false end
+		local n = m.Name:lower()
+		if n:find("horse") or n:find("steed") or n:find("pony") or n:find("mount") then return true end
+		local seat = m:FindFirstChildWhichIsA("VehicleSeat", true)
+		if seat and seat.Name:lower():find("saddle") then return true end
+		if m:FindFirstChild("SaddleBase", true) then return true end
+		local par = m.Parent
+		if par and par.Name == "Ride" then return true end
+		return false
+	end
 	local function registerModel(m)
 		if not m or not m:IsA("Model") or isRegistered(m) then return false end
-		table.insert(registered, { model = m, name = m.Name, type = vehicleTypes[m.Name] or "Car" })
+		table.insert(registered, { model = m, name = m.Name, type = vehicleTypes[m.Name] or (looksLikeHorse(m) and "Horse" or "Car") })
 		return true
 	end
 	-- Find every model that contains a VehicleSeat (i.e. a drivable/operatable vehicle).

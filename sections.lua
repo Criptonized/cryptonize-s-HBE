@@ -74,9 +74,38 @@ return {
 
 		local gLog = ctx:Groupbox("Engagement Logger", "right")
 		local lblLog = gLog:AddLabel("Logging engagement range...", true)
+		local lblParts = gLog:AddLabel("Per-part: no data yet", true)
 		-- running stats over the distance to the NEAREST enemy (a proxy for engage range)
 		local samples, sum, minD, maxD = 0, 0, math.huge, 0
 		local buckets = {}   -- [floor(d/25)] = count
+		-- Per-hitbox: classify which body part of the nearest enemy is closest to your aim ray
+		-- (Head / Torso / Limb) + track average engagement range + most-aimed part per class, so
+		-- you can size headSize/torsoSize/limbSize to where you actually fight.
+		local classStats = { Head = { n = 0, sum = 0 }, Torso = { n = 0, sum = 0 }, Limb = { n = 0, sum = 0 } }
+		local PART_LIMB = { "arm", "leg", "hand", "foot", "wrist", "knee", "shoulder", "elbow", "ankle", "hip" }
+		local function classOfName(n)
+			n = tostring(n):lower()
+			if n:find("head") then return "Head" end
+			for _, w in ipairs(PART_LIMB) do if n:find(w) then return "Limb" end end
+			return "Torso"
+		end
+		local function aimedClass(plr)
+			local cam = workspace.CurrentCamera
+			local pc = plr.Character
+			if not (cam and pc) then return nil end
+			local camPos, look = cam.CFrame.Position, cam.CFrame.LookVector
+			local bestPart, bestDot
+			for _, d in ipairs(pc:GetDescendants()) do
+				if d:IsA("BasePart") then
+					local dir = d.Position - camPos
+					if dir.Magnitude > 0.1 then
+						local dot = look:Dot(dir.Unit)
+						if not bestDot or dot > bestDot then bestDot, bestPart = dot, d end
+					end
+				end
+			end
+			return bestPart and classOfName(bestPart.Name) or nil
+		end
 		local function suggested()
 			local bestB, bestC = nil, 0
 			for b, c in pairs(buckets) do if c > bestC then bestB, bestC = b, c end end
@@ -93,6 +122,7 @@ return {
 		end):AddToolTip("Set HBE + ESP distance to the most-used engagement range (+margin).")
 		gLog:AddButton("Reset Log", function()
 			samples, sum, minD, maxD, buckets = 0, 0, math.huge, 0, {}
+			classStats = { Head = { n = 0, sum = 0 }, Torso = { n = 0, sum = 0 }, Limb = { n = 0, sum = 0 } }
 			pcall(function() lblLog:SetText("Log reset.") end)
 		end)
 
@@ -104,18 +134,22 @@ return {
 				local c = lPlayer.Character
 				local lr = c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Head"))
 				if lr then
-					local best
+					local best, bestPlr
 					for _, plr in ipairs(Players:GetPlayers()) do
 						if isEnemy(plr) then
 							local pc = plr.Character
 							local pr = pc and (pc:FindFirstChild("HumanoidRootPart") or pc:FindFirstChild("Head"))
-							if pr then local d = (pr.Position - lr.Position).Magnitude; if not best or d < best then best = d end end
+							if pr then local d = (pr.Position - lr.Position).Magnitude; if not best or d < best then best = d; bestPlr = plr end end
 						end
 					end
 					if best and best < 5000 then
 						samples = samples + 1; sum = sum + best
 						minD = math.min(minD, best); maxD = math.max(maxD, best)
 						local b = math.floor(best / 25); buckets[b] = (buckets[b] or 0) + 1
+						if bestPlr then
+							local cls = aimedClass(bestPlr)
+							if cls and classStats[cls] then classStats[cls].n = classStats[cls].n + 1; classStats[cls].sum = classStats[cls].sum + best end
+						end
 					end
 				end
 			end
@@ -159,6 +193,21 @@ return {
 			"tab.)",
 			true)
 
+		local lastParts = 0
+		ctx:Connect(RunService.Heartbeat, function()
+			local now = tick()
+			if now - lastParts < 0.5 then return end
+			lastParts = now
+			local parts, topCls, topN = {}, nil, 0
+			for _, cls in ipairs({ "Head", "Torso", "Limb" }) do
+				local st = classStats[cls]
+				if st.n > 0 then
+					parts[#parts + 1] = ("%s %dm(%d)"):format(cls, math.floor(st.sum / st.n), st.n)
+					if st.n > topN then topN, topCls = st.n, cls end
+				end
+			end
+			pcall(function() lblParts:SetText(#parts > 0 and ("Per-part avg range:\n" .. table.concat(parts, "  ") .. "\nMost-aimed: " .. (topCls or "-")) or "Per-part: no data yet") end)
+		end)
 		pluginCleanup = function() end
 	end,
 	unload = function() if pluginCleanup then pcall(pluginCleanup); pluginCleanup = nil end end,

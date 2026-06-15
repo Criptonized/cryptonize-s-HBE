@@ -203,6 +203,61 @@ return {
 		local RELOAD_W = { "reloadtime", "reloadduration", "reloaddelay", "reloadcooldown" }
 		local RATE_W   = { "firerate", "cooldown", "firedelay", "shotdelay", "debounce", "firetime", "rof", "rpm", "roundspersecond", "roundsperminute", "rateoffire", "fireinterval", "shootdelay", "shootcooldown", "spm", "windup", "winddown", "charge" }
 
+		local lblRate = g2:AddLabel("Fire-rate values: 'Find' to locate them.", true)
+		-- Read-only WIDE scan: Fire Rate Boost above only writes values ON the held tool, but many
+		-- guns (bolt-actions especially) keep the cooldown in a ReplicatedStorage config module or
+		-- a server script. This lists every rate/cooldown/RPM value across the tool + character +
+		-- RS config modules with its full path + value, to a file -- so you can see WHERE to write
+		-- it (then Fire Rate Boost if it's tool-local, or the Value Editor by path). Finding the
+		-- value is the whole game -- "it's all just changing values" once you know which one.
+		local function wideRateScan()
+			local found = {}
+			local function addInst(d)
+				if (d:IsA("NumberValue") or d:IsA("IntValue") or d:IsA("DoubleConstrainedValue") or d:IsA("IntConstrainedValue")) and nameHas(d.Name, RATE_W) then
+					found[#found + 1] = { path = d:GetFullName(), val = d.Value }
+				end
+				pcall(function()
+					for an, av in pairs(d:GetAttributes()) do
+						if type(av) == "number" and nameHas(an, RATE_W) then found[#found + 1] = { path = d:GetFullName() .. " @" .. an, val = av } end
+					end
+				end)
+			end
+			for _, r in ipairs({ heldTool(), lPlayer.Character }) do
+				if r then pcall(function() for _, d in ipairs(r:GetDescendants()) do addInst(d) end end) end
+			end
+			local n = 0
+			pcall(function()
+				for _, d in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
+					n = n + 1; if n > 6000 then break end
+					if d:IsA("NumberValue") or d:IsA("IntValue") or d:IsA("DoubleConstrainedValue") or d:IsA("IntConstrainedValue") then
+						if nameHas(d.Name, RATE_W) then found[#found + 1] = { path = d:GetFullName(), val = d.Value } end
+					elseif d:IsA("ModuleScript") and looksLikeConfig(d.Name) then
+						pcall(function()
+							local ok, mod = pcall(require, d)
+							if ok and type(mod) == "table" then
+								local out = {}
+								scanTable(mod, RATE_W, out, 1, {})
+								for _, fld in ipairs(out) do found[#found + 1] = { path = d:GetFullName() .. " [module key]", val = fld.orig } end
+							end
+						end)
+					end
+				end
+			end)
+			local tool = heldTool()
+			local lines = { "=== Fire-Rate value scan ===", "PlaceId: " .. tostring(game.PlaceId), "Held: " .. (tool and tool.Name or "none"), "" }
+			for _, f in ipairs(found) do lines[#lines + 1] = ("%s = %s"):format(f.path, tostring(f.val)) end
+			local fname = "firerate_scan_" .. tostring(game.PlaceId) .. ".txt"
+			local b = getgenv().CryptsHBE
+			if b and b.SessionName then pcall(function() fname = b:SessionName(fname) end) end
+			pcall(function()
+				if makefolder and not (isfolder and isfolder("CryptsHBE")) then makefolder("CryptsHBE") end
+				if writefile then writefile("CryptsHBE/" .. fname, table.concat(lines, "\n")) end
+			end)
+			pcall(function() lblRate:SetText(("Found %d rate value(s)\n-> CryptsHBE/%s"):format(#found, fname)) end)
+			Library:Notify(("Fire-rate scan: %d value(s) -> %s"):format(#found, fname))
+		end
+		g2:AddButton("Find Fire-Rate Values (wide)", wideRateScan):AddToolTip("Read-only: lists every fire-rate/cooldown/RPM value across the held tool + character + ReplicatedStorage config modules, with paths + values, to a file. Locate the value to write (then Fire Rate Boost or the Value Editor). Upload the file and I'll pinpoint it.")
+
 		local fR, fD, fL, fF = newFeature(), newFeature(), newFeature(), newFeature()
 		-- Force-Auto value flip state (its own restorable list; firemode fields aren't numeric).
 		local fmTool, fmFields = nil, {}

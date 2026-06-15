@@ -9,7 +9,7 @@ local lPlayer = Players.LocalPlayer
 local DrawingFallback = getgenv().DrawingFallback
 local pluginCleanup = nil
 local OBJ_W = { "flag", "objective", "capture", "zone", "control", "base", "cap", "point", "spawnpoint", "hardpoint", "intel", "bomb", "hill" }
-local LOOT_W = { "crate", "ammo", "supply", "loot", "cache", "pickup", "resupply", "kit", "box", "medkit", "health", "armor" }
+local LOOT_W = { "crate", "ammo", "supply", "loot", "cache", "pickup", "resupply", "kit", "box", "medkit", "health", "armor", "refill", "arrow", "bolt", "quiver" }
 local function hasW(n, words) n = tostring(n):lower() for _, w in ipairs(words) do if n:find(w, 1, true) then return true end end return false end
 
 return {
