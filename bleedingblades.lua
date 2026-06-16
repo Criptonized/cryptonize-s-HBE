@@ -189,18 +189,21 @@ return {
 		end
 		local function argText(...)
 			local out = {}
-			for _, a in ipairs({ ... }) do if type(a) == "string" or type(a) == "number" then out[#out + 1] = tostring(a) end end
+			for _, a in ipairs({ ... }) do if type(a) == "table" then for _, b in pairs(a) do if type(b) == "string" or type(b) == "number" then out[#out + 1] = tostring(b) end end elseif type(a) == "string" or type(a) == "number" then out[#out + 1] = tostring(a) end end
 			return table.concat(out, " ")
 		end
-		-- Hook OnClientEvent on the likely message remotes (Game.* + Combat.Feedback-style).
+		-- Connect OnClientEvent on every gathered RemoteEvent (wide net), filter args for keywords.
 		pcall(function()
 			local watch = {}
-			local g = RS:FindFirstChild("Game")
-			if g then for _, n in ipairs({ "MessageSend", "Announcer", "Signal", "Voting" }) do
+			for _, dd in ipairs(RS:GetDescendants()) do if dd:IsA("RemoteEvent") then watch[#watch + 1] = dd end end
+				local rrs2 = game:FindFirstChild("RobloxReplicatedStorage")
+				if rrs2 then for _, dd in ipairs(rrs2:GetDescendants()) do if dd:IsA("RemoteEvent") then watch[#watch + 1] = dd end end end
+				local g = RS:FindFirstChild("Game")
+			if g then for _, n in ipairs({}) do
 				local r = g:FindFirstChild(n); if r and r:IsA("RemoteEvent") then watch[#watch + 1] = r end
 			end end
 			local combat = RS:FindFirstChild("Combat")
-			if combat then for _, n in ipairs({ "Doll", "Replicate", "Playsound" }) do
+			if combat then for _, n in ipairs({}) do
 				local r = combat:FindFirstChild(n); if r and r:IsA("RemoteEvent") then watch[#watch + 1] = r end
 			end end
 			for _, r in ipairs(watch) do
@@ -433,6 +436,127 @@ return {
 		end)
 
 		scanCombat()
+
+		-- ===== Precise auto-parry: active block-dir readout + auto-face =======
+		-- DirectionFrame's lit arrow (lowest ImageTransparency) = the active block direction.
+		-- Surface it, and optionally auto-FACE the nearest threat while auto-blocking so your
+		-- facing-based block actually covers the attacker.
+		local lblBlockDir = gPar:AddLabel("Block dir: -", true)
+		gPar:AddToggle("bbBlockFace", { Text = "Face threat while blocking", Default = false, Tooltip = "While Auto-Block holds, rotate to face the nearest threatening enemy so your block covers them. (Default: OFF)" }); C("bbBlockFace")
+		local function nearestThreat()
+			local hrp = lPlayer.Character and lPlayer.Character:FindFirstChild("HumanoidRootPart")
+			if not hrp then return nil end
+			local range = (Options.bbBlockRange and Options.bbBlockRange.Value) or 10
+			local best, bestD
+			for _, plr in ipairs(Players:GetPlayers()) do
+				if plr ~= lPlayer and not sameTeam(plr) then
+					local ch = plr.Character
+					local thrp = ch and ch:FindFirstChild("HumanoidRootPart")
+					local h = ch and ch:FindFirstChildWhichIsA("Humanoid")
+					if thrp and h and h.Health > 0 and (thrp.Position - hrp.Position).Magnitude <= range then
+						local toMe = hrp.Position - thrp.Position
+						local d = (thrp.Position - hrp.Position).Magnitude
+						if toMe.Magnitude > 0.1 and thrp.CFrame.LookVector:Dot(toMe.Unit) > 0.4 and (not bestD or d < bestD) then
+							bestD = d; best = thrp
+						end
+					end
+				end
+			end
+			return best
+		end
+		local function activeBlockDir()
+			local di = directionUI()
+			local df = di and di:FindFirstChild("DirectionFrame")
+			if not df then return nil end
+			local best, bestT
+			for _, n in ipairs({ "Up", "Down", "Left", "Right" }) do
+				local a = df:FindFirstChild(n)
+				if a and a:IsA("ImageLabel") then
+					local t = a.ImageTransparency
+					if not bestT or t < bestT then bestT = t; best = n end
+				end
+			end
+			return best
+		end
+		local lastBD = 0
+		ctx:Connect(RunService.Heartbeat, function()
+			if Toggles.bbAutoBlock and Toggles.bbAutoBlock.Value and Toggles.bbBlockFace and Toggles.bbBlockFace.Value then
+				local hrp = lPlayer.Character and lPlayer.Character:FindFirstChild("HumanoidRootPart")
+				local nt = nearestThreat()
+				if hrp and nt then
+					pcall(function() hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(nt.Position.X, hrp.Position.Y, nt.Position.Z)) end)
+				end
+			end
+			local now = tick(); if now - lastBD < 0.25 then return end; lastBD = now
+			pcall(function() lblBlockDir:SetText("Block dir: " .. (activeBlockDir() or "-")) end)
+		end)
+
+		-- ===== v2 desync-lite: keep your VIEW home during Ghost Hold ==========
+		-- While Ghost Hold pins your body at the target, lock the camera to where you started
+		-- so YOUR view stays home (the "body never moves" feel). Restores on release.
+		gGhost:AddToggle("bbGhostCamLock", { Text = "Hold: keep camera home", Default = false, Tooltip = "During Ghost Hold, lock the camera to your start spot so your view stays home while your body fights at the target. (Default: OFF)" }); C("bbGhostCamLock")
+		local camLocked = false
+		ctx:Connect(RunService.RenderStepped, function()
+			local active = ghostHolding and Toggles.bbGhostCamLock and Toggles.bbGhostCamLock.Value
+			local cam = Workspace.CurrentCamera
+			if active and cam and ghostHoldOrigin then
+				camLocked = true
+				pcall(function()
+					cam.CameraType = Enum.CameraType.Scriptable
+					local t = curTarget()
+					local lp = t and t.char:FindFirstChild("HumanoidRootPart")
+					cam.CFrame = CFrame.lookAt(ghostHoldOrigin.Position + Vector3.new(0, 5, 0), (lp and lp.Position) or (ghostHoldOrigin.Position - ghostHoldOrigin.LookVector * 10))
+				end)
+			elseif camLocked and cam then
+				camLocked = false
+				pcall(function()
+					cam.CameraType = Enum.CameraType.Custom
+					local hum = lPlayer.Character and lPlayer.Character:FindFirstChildWhichIsA("Humanoid")
+					if hum then cam.CameraSubject = hum end
+				end)
+			end
+		end)
+
+		-- ===== Arrow Predict (lead + drop marker) =============================
+		-- Bows/crossbows fire projectiles (CreateProjectile). This draws WHERE to aim on the
+		-- nearest enemy given a tunable arrow speed + gravity + their motion (lead). Visual aid
+		-- only -- you still shoot manually. Tune the speed once you sniff CreateProjectile.
+		local gArrow = ctx:Groupbox("Arrow Predict", "right")
+		gArrow:AddToggle("bbArrowPredict", { Text = "Aim Marker", Default = false, Tooltip = "Draw a predicted aim point on the nearest enemy for archery (lead + drop). (Default: OFF)" }); C("bbArrowPredict")
+		gArrow:AddSlider("bbArrowSpeed", { Text = "Arrow Speed", Min = 50, Max = 800, Default = 250, Rounding = 0, Tooltip = "Projectile speed (studs/s). Sniff CreateProjectile for the real value." }); C("bbArrowSpeed")
+		gArrow:AddSlider("bbArrowDrop", { Text = "Gravity", Min = 0, Max = 250, Default = 80, Rounding = 0, Tooltip = "Downward accel (studs/s^2) for drop compensation -- aims higher over distance." }); C("bbArrowDrop")
+		local aMark = ctx:Track(DrawingFallback.new("Circle")); aMark.Thickness = 2; aMark.Filled = false; aMark.Radius = 6; aMark.Color = Color3.fromRGB(120, 230, 255); aMark.Visible = false
+		local aTxt = ctx:Track(DrawingFallback.new("Text")); aTxt.Size = 13; aTxt.Center = true; aTxt.Outline = true; aTxt.Color = Color3.fromRGB(120, 230, 255); aTxt.Visible = false
+		ctx:Connect(RunService.RenderStepped, function()
+			if not (Toggles.bbArrowPredict and Toggles.bbArrowPredict.Value) then aMark.Visible = false; aTxt.Visible = false; return end
+			local cam = Workspace.CurrentCamera
+			local hrp = lPlayer.Character and lPlayer.Character:FindFirstChild("HumanoidRootPart")
+			if not (cam and hrp) then aMark.Visible = false; aTxt.Visible = false; return end
+			local best, bestD
+			for _, plr in ipairs(Players:GetPlayers()) do
+				if plr ~= lPlayer and not sameTeam(plr) then
+					local ch = plr.Character
+					local thrp = ch and ch:FindFirstChild("HumanoidRootPart")
+					local h = ch and ch:FindFirstChildWhichIsA("Humanoid")
+					if thrp and h and h.Health > 0 then
+						local d = (thrp.Position - hrp.Position).Magnitude
+						if not bestD or d < bestD then bestD = d; best = thrp end
+					end
+				end
+			end
+			if not best then aMark.Visible = false; aTxt.Visible = false; return end
+			local speed = (Options.bbArrowSpeed and Options.bbArrowSpeed.Value) or 250
+			local grav = (Options.bbArrowDrop and Options.bbArrowDrop.Value) or 80
+			local t = (best.Position - hrp.Position).Magnitude / math.max(1, speed)
+			local vel = Vector3.new()
+			pcall(function() vel = best.AssemblyLinearVelocity end)
+			local aim = best.Position + vel * t + Vector3.new(0, 0.5 * grav * t * t, 0)
+			local sp, on = cam:WorldToViewportPoint(aim)
+			if on and sp.Z > 0 then
+				aMark.Position = Vector2.new(sp.X, sp.Y); aMark.Visible = true
+				aTxt.Text = ("aim  %dm"):format(math.floor(bestD)); aTxt.Position = Vector2.new(sp.X, sp.Y + 12); aTxt.Visible = true
+			else aMark.Visible = false; aTxt.Visible = false end
+		end)
 
 		pluginCleanup = function()
 			pcall(function() if blockHeld then setBlock(false) end end)
