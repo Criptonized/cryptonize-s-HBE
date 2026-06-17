@@ -70,6 +70,25 @@ return {
 			pcall(function() lblPick:SetText("Picked: " .. m.Name .. (hum and " (humanoid)" or "") .. "\n@ " .. m:GetFullName()) end)
 			Library:Notify("Picked: " .. m.Name)
 		end
+		-- Resolve a clicked part UP to the character it belongs to (so clicking a shield /
+		-- weapon / helmet -- which are sub-models -- still picks the humanoid character).
+		local function resolveCharacter(part)
+			local m = part
+			while m and m ~= game do
+				if m:IsA("Model") and m:FindFirstChildWhichIsA("Humanoid") then return m end
+				m = m.Parent
+			end
+			return part and part:FindFirstAncestorWhichIsA("Model")
+		end
+		-- Use the shared hold-ring picker (same UX/visual as the vehicle/value pickers).
+		local function startPick()
+			if Bridge and Bridge.StartHoldPick then
+				Bridge:StartHoldPick({ color = Color3.fromRGB(255, 120, 60), onPick = function(part)
+					local m = resolveCharacter(part)
+					if m then setPicked(m) else pcall(function() lblPick:SetText("Couldn't resolve a model there.") end) end
+				end })
+			else Library:Notify("Hold-pick unavailable") end
+		end
 		local function armPick()
 			pickArmed = true
 			pcall(function() lblPick:SetText("PICK MODE: click a model in the world...") end)
@@ -88,9 +107,9 @@ return {
 			if m then setPicked(m) else pcall(function() lblPick:SetText("Nothing under that click -- try again (aim at a body).") end) end
 		end)
 		if Bridge and Bridge.AddKeybind then
-			pcall(function() Bridge:AddKeybind("bbPick", "BB Pick Model", "K", "Toggle", function() armPick() end) end)
+			pcall(function() Bridge:AddKeybind("bbPick", "BB Pick Model", "K", "Toggle", function() startPick() end) end)
 		end
-		gPick:AddButton("Pick Model (then click world)", armPick):AddToolTip("Arms pick mode -- then CLICK the model in the 3D world. (Clicking the button can't read the world directly, so it waits for your next world click.)")
+		gPick:AddButton("Pick Model (hold-ring)", startPick):AddToolTip("Aim at a model and HOLD left-click -- a ring fills, then it picks (right-click cancels). Clicking a shield/weapon/helmet resolves to the character it belongs to.")
 		gPick:AddButton("Dump Picked -> Remotes", function()
 			if not (pickedModel and pickedModel.Parent) then Library:Notify("Pick a model first"); return end
 			local lines = { "=== Picked Model Dump ===", "Model: " .. pickedModel.Name, "Path: " .. pickedModel:GetFullName(), "" }
@@ -557,6 +576,107 @@ return {
 				aTxt.Text = ("aim  %dm"):format(math.floor(bestD)); aTxt.Position = Vector2.new(sp.X, sp.Y + 12); aTxt.Visible = true
 			else aMark.Visible = false; aTxt.Visible = false end
 		end)
+
+		-- ===== Capture / Inspect combat (get the PHit / CreateProjectile args) ==
+		-- The remote ARGS are the lever for the silent (no-teleport) hit. In a custom game the
+		-- plain sniffer often sees nothing, so two methods here:
+		--  Capture = scoped __namecall hook logging ONLY Combat.* FireServer calls + args (no
+		--    filter to misconfigure; DETECTABLE while on; auto-stops after 15s).
+		--  Inspect = read the combat LocalScripts' string constants + Instance env vars to find
+		--    the remote + how the hit is built -- works even when the hook captures nothing.
+		local gCap = ctx:Groupbox("Capture / Inspect", "left")
+		local lblCap = gCap:AddLabel("Capture: swing once. Inspect: no hook.", true)
+		local COMBAT_NAMES = { PHit = true, CreateProjectile = true, Mount = true, MountCombat = true, MountSmash = true, Kick = true, ItemThrow = true, WaistRotation = true, HelmRemove = true, Doll = true }
+		local capLog, capActive, hookInstalled = {}, false, false
+		local function fmtArg(a)
+			local ta = typeof(a)
+			if ta == "Instance" then local ok, p = pcall(function() return a:GetFullName() end); return "Instance:" .. (ok and p or a.Name) end
+			if ta == "Vector3" or ta == "CFrame" or ta == "Color3" then return ta .. ":" .. tostring(a) end
+			if ta == "table" then return "table{...}" end
+			return ta .. ":" .. tostring(a)
+		end
+		local function ensureCapHook()
+			if hookInstalled then return true end
+			if not (hookmetamethod and getnamecallmethod and checkcaller) then Library:Notify("Executor lacks hookmetamethod"); return false end
+			local ok = pcall(function()
+				local old
+				old = hookmetamethod(game, "__namecall", function(self, ...)
+					if capActive and not checkcaller() then
+						local m = getnamecallmethod()
+						if m == "FireServer" or m == "InvokeServer" then
+							local nm = ""; pcall(function() nm = self.Name end)
+							if COMBAT_NAMES[nm] then
+								local args, parts, k = { ... }, { nm .. " (" .. m .. ")" }, select("#", ...)
+								for i = 1, k do parts[#parts + 1] = "[" .. i .. "] " .. fmtArg(args[i]) end
+								table.insert(capLog, table.concat(parts, "  |  "))
+								if #capLog > 30 then table.remove(capLog, 1) end
+								pcall(function() lblCap:SetText("Captured " .. #capLog .. " call(s)...") end)
+							end
+						end
+					end
+					return old(self, ...)
+				end)
+			end)
+			if not ok then Library:Notify("Capture hook failed"); return false end
+			hookInstalled = true; return true
+		end
+		gCap:AddButton("Capture Combat (swing once)", function()
+			if not ensureCapHook() then return end
+			capLog = {}; capActive = true
+			Library:Notify("CAPTURING 15s -- swing / shoot ONE attack now")
+			pcall(function() lblCap:SetText("CAPTURING... attack now (15s)") end)
+			task.delay(15, function()
+				capActive = false
+				local lines = { "=== Combat Capture ===", "PlaceId: " .. tostring(game.PlaceId), "" }
+				for _, s in ipairs(capLog) do lines[#lines + 1] = s end
+				if #capLog == 0 then lines[#lines + 1] = "(nothing -- the hook saw no Combat FireServer. Try Inspect, or the call path is hidden / server-side.)" end
+				local fn = writeOut("combat_capture_" .. tostring(game.PlaceId) .. ".txt", lines)
+				Library:Notify("Capture done: " .. #capLog .. " -> CryptsHBE/" .. fn)
+				pcall(function() lblCap:SetText("Capture: " .. #capLog .. " call(s) -> file") end)
+			end)
+		end):AddToolTip("Scoped __namecall hook (DETECTABLE while on, auto-stops 15s) logging Combat.* FireServer calls + args. Swing/shoot ONCE. No filter to get wrong.")
+		gCap:AddButton("Inspect Combat Scripts", function()
+			local lines = { "=== Combat Script Inspect ===", "PlaceId: " .. tostring(game.PlaceId), "" }
+			local seen = 0
+			pcall(function()
+				local roots = { RS:FindFirstChild("Combat"), lPlayer.Character, lPlayer:FindFirstChild("PlayerScripts") }
+				for _, root in ipairs(roots) do
+					if root then
+						for _, d in ipairs(root:GetDescendants()) do
+							if (d:IsA("LocalScript") or d:IsA("ModuleScript")) and seen < 30 then
+								local isHit = false
+								pcall(function()
+									local cl = getscriptclosure and getscriptclosure(d)
+									if cl and debug and debug.getconstants then
+										for _, kk in ipairs(debug.getconstants(cl)) do
+											if type(kk) == "string" and (kk:find("Hit") or kk:find("Projectile") or kk:find("Damage") or kk:find("Combat") or kk:find("Swing") or kk:find("FireServer")) then isHit = true; break end
+										end
+									end
+								end)
+								if isHit then
+									seen = seen + 1
+									lines[#lines + 1] = "SCRIPT " .. d:GetFullName()
+									pcall(function()
+										for _, kk in ipairs(debug.getconstants(getscriptclosure(d))) do
+											if type(kk) == "string" and #kk > 1 then lines[#lines + 1] = "  const: " .. kk:sub(1, 90) end
+										end
+									end)
+									pcall(function()
+										local env = getsenv and getsenv(d)
+										if env then for k2, v2 in pairs(env) do
+											if typeof(v2) == "Instance" then lines[#lines + 1] = ("  env %s = Instance:%s"):format(tostring(k2), v2:GetFullName()) end
+										end end
+									end)
+									lines[#lines + 1] = ""
+								end
+							end
+						end
+					end
+				end
+			end)
+			local fn = writeOut("combat_inspect_" .. tostring(game.PlaceId) .. ".txt", lines)
+			Library:Notify("Inspected " .. seen .. " script(s) -> CryptsHBE/" .. fn)
+		end):AddToolTip("Reads the combat scripts' string constants + Instance env vars to find the remote + how the hit is built -- works without a hook. Send the file.")
 
 		pluginCleanup = function()
 			pcall(function() if blockHeld then setBlock(false) end end)
