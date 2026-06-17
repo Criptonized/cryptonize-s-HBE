@@ -577,6 +577,44 @@ return {
 			else aMark.Visible = false; aTxt.Visible = false end
 		end)
 
+		-- Arrow trajectory ARC: simulate the projectile from your bow along where you're aiming,
+		-- under the tunable gravity, and draw the flight path + the ground landing point.
+		local ARC_N = 32
+		local arcLines = {}
+		for i = 1, ARC_N do local ln = ctx:Track(DrawingFallback.new("Line")); ln.Thickness = 2; ln.Color = Color3.fromRGB(120, 230, 255); ln.Visible = false; arcLines[i] = ln end
+		local landMark = ctx:Track(DrawingFallback.new("Circle")); landMark.Thickness = 2; landMark.Filled = false; landMark.Radius = 9; landMark.Color = Color3.fromRGB(120, 230, 255); landMark.Visible = false
+		ctx:Connect(RunService.RenderStepped, function()
+			local showArc = Toggles.bbArrowPredict and Toggles.bbArrowPredict.Value
+			local cam = Workspace.CurrentCamera
+			local hrp = lPlayer.Character and lPlayer.Character:FindFirstChild("HumanoidRootPart")
+			if not (showArc and cam and hrp) then
+				for _, ln in ipairs(arcLines) do ln.Visible = false end
+				landMark.Visible = false; return
+			end
+			local speed = (Options.bbArrowSpeed and Options.bbArrowSpeed.Value) or 250
+			local grav = (Options.bbArrowDrop and Options.bbArrowDrop.Value) or 80
+			local p = hrp.Position + Vector3.new(0, 2, 0)
+			local v = cam.CFrame.LookVector * math.max(1, speed)
+			local dt = 0.07
+			local rp = RaycastParams.new(); rp.FilterType = Enum.RaycastFilterType.Exclude
+			pcall(function() rp.FilterDescendantsInstances = { lPlayer.Character } end)
+			local pts, landed = { p }, nil
+			for _ = 1, ARC_N do
+				local np = p + v * dt
+				local hit = Workspace:Raycast(p, np - p, rp)
+				if hit then landed = hit.Position; pts[#pts + 1] = hit.Position; break end
+				p = np; v = v + Vector3.new(0, -grav, 0) * dt
+				pts[#pts + 1] = p
+			end
+			local screen = {}
+			for i, wp in ipairs(pts) do local s = cam:WorldToViewportPoint(wp); screen[i] = (s.Z > 0) and Vector2.new(s.X, s.Y) or nil end
+			for i = 1, ARC_N do
+				local ln = arcLines[i]
+				if screen[i] and screen[i + 1] then ln.From = screen[i]; ln.To = screen[i + 1]; ln.Visible = true else ln.Visible = false end
+			end
+			if landed then local s = cam:WorldToViewportPoint(landed); if s.Z > 0 then landMark.Position = Vector2.new(s.X, s.Y); landMark.Visible = true else landMark.Visible = false end else landMark.Visible = false end
+		end)
+
 		-- ===== Capture / Inspect combat (get the PHit / CreateProjectile args) ==
 		-- The remote ARGS are the lever for the silent (no-teleport) hit. In a custom game the
 		-- plain sniffer often sees nothing, so two methods here:
@@ -678,7 +716,82 @@ return {
 			Library:Notify("Inspected " .. seen .. " script(s) -> CryptsHBE/" .. fn)
 		end):AddToolTip("Reads the combat scripts' string constants + Instance env vars to find the remote + how the hit is built -- works without a hook. Send the file.")
 
+		-- ===== Arrow Ammo (inf arrows) ========================================
+		-- Bows aren't Tools, so the Inf Ammo plugin can't register them. This scans you for
+		-- arrow/ammo/bolt/quiver numeric values and holds them full. Client-side -- reverts if
+		-- the count is server-tracked (watch the number; if it snaps back, it's server-side).
+		local gAmmo = ctx:Groupbox("Arrow Ammo", "right")
+		gAmmo:AddToggle("bbArrowAmmo", { Text = "Inf Arrows", Default = false, Tooltip = "Find + hold arrow/ammo count values full (no Tool needed). Client-side. (Default: OFF)" }); C("bbArrowAmmo")
+		gAmmo:AddSlider("bbArrowAmt", { Text = "Amount", Min = 1, Max = 999, Default = 99, Rounding = 0 }); C("bbArrowAmt")
+		gAmmo:AddInput("bbArrowName", { Text = "Manual value name", Default = "", Tooltip = "Optional exact Value name to also pin (e.g. 'Arrows'). Blank = auto-scan." }); C("bbArrowName")
+		local lblAmmo = gAmmo:AddLabel("Inf arrows: off", true)
+		local AMMO_W = { "arrow", "ammo", "bolt", "quiver", "shaft", "round", "projectile", "reserve" }
+		local function isNumV(d) return d:IsA("IntValue") or d:IsA("NumberValue") or d:IsA("DoubleConstrainedValue") or d:IsA("IntConstrainedValue") end
+		local lastAmmo = 0
+		ctx:Connect(RunService.Heartbeat, function()
+			if not (Toggles.bbArrowAmmo and Toggles.bbArrowAmmo.Value) then return end
+			local now = tick(); if now - lastAmmo < 0.2 then return end; lastAmmo = now
+			local amt = (Options.bbArrowAmt and Options.bbArrowAmt.Value) or 99
+			local manual = ((Options.bbArrowName and Options.bbArrowName.Value) or ""):lower()
+			local found = 0
+			for _, root in ipairs({ lPlayer.Character, lPlayer }) do
+				if root then
+					pcall(function()
+						local n = 0
+						for _, d in ipairs(root:GetDescendants()) do
+							n = n + 1; if n > 4000 then break end
+							if isNumV(d) then
+								local nm = d.Name:lower()
+								local match = (manual ~= "" and nm == manual)
+								if not match then for _, w in ipairs(AMMO_W) do if nm:find(w, 1, true) then match = true; break end end end
+								if match then found = found + 1; pcall(function() if d.Value < amt then d.Value = amt end end) end
+							end
+						end
+					end)
+				end
+			end
+			pcall(function() lblAmmo:SetText("Inf arrows: " .. found .. " value(s) pinned") end)
+		end)
+
+		-- ===== Weapon Reach (experimental -- "lengthen the weapon") ============
+		-- Scales the held weapon's blade parts for reach. Like HBE, BB validates the hit server-
+		-- side, so this MOST LIKELY gets an Invalid-Attack kill -- it's here to TRY (just a value
+		-- write). Watch the Server Monitor; if logged, turn it off.
+		local gReach = ctx:Groupbox("Weapon Reach (exp)", "right")
+		gReach:AddToggle("bbReach", { Text = "Extend Weapon", Default = false, Tooltip = "Scale the held weapon's blade longer for reach. Almost certainly server-invalidated in BB (Invalid Attack). Experimental. (Default: OFF)" }); C("bbReach")
+		gReach:AddSlider("bbReachX", { Text = "Length x", Min = 1, Max = 6, Default = 2, Rounding = 1 }); C("bbReachX")
+		local REACH_W = { "blade", "metalblade", "shaft", "woodshaft", "buttspike", "spear", "lance", "pike" }
+		local reachOrig = setmetatable({}, { __mode = "k" })
+		local function restoreReach() for d, sz in pairs(reachOrig) do pcall(function() if d and d.Parent then d.Size = sz end end) end end
+		local lastReach = 0
+		ctx:Connect(RunService.Heartbeat, function()
+			local on = Toggles.bbReach and Toggles.bbReach.Value
+			local now = tick(); if now - lastReach < 0.2 then return end; lastReach = now
+			local char = lPlayer.Character
+			if not char then return end
+			pcall(function()
+				for _, d in ipairs(char:GetDescendants()) do
+					if d:IsA("BasePart") then
+						local nm = d.Name:lower()
+						local match = false
+						for _, w in ipairs(REACH_W) do if nm:find(w, 1, true) then match = true; break end end
+						if match then
+							if not reachOrig[d] then reachOrig[d] = d.Size end
+							if on then
+								local s = reachOrig[d]; local x = (Options.bbReachX and Options.bbReachX.Value) or 2
+								local longest = math.max(s.X, s.Y, s.Z)
+								pcall(function() d.Size = Vector3.new(s.X == longest and s.X * x or s.X, s.Y == longest and s.Y * x or s.Y, s.Z == longest and s.Z * x or s.Z) end)
+							else
+								pcall(function() d.Size = reachOrig[d] end)
+							end
+						end
+					end
+				end
+			end)
+		end)
+
 		pluginCleanup = function()
+			pcall(restoreReach)
 			pcall(function() if blockHeld then setBlock(false) end end)
 			pcall(function()
 				local hum = lPlayer.Character and lPlayer.Character:FindFirstChildWhichIsA("Humanoid")
