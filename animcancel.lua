@@ -23,7 +23,9 @@ local WATCH_FILE = "CryptsHBE/anim_watch_" .. tostring(game.PlaceId) .. ".json"
 -- Default action-animation keywords (matched as substrings of the track NAME). Reload
 -- is included on purpose (speeds reloads when client-gated). "equip" is left OUT so we
 -- don't fight tool-equipping.
-local DEFAULT_KEYWORDS = "shoot,fire,attack,swing,slash,bolt,reload,cycle,load,rechamber,pump,stab,thrust,draw,nock,recoil,blast"
+-- Default is PROJECTILE-SAFE (no melee swing/slash/stab words): speeding melee anims desyncs
+-- state-machine combat (BB swords brick). Add those words yourself if a game needs them.
+local DEFAULT_KEYWORDS = "shoot,fire,bolt,reload,cycle,load,rechamber,pump,draw,nock,recoil,blast,arrow"
 -- Locomotion / passive anims that "All but movement" mode must never touch.
 local LOCO = { "idle", "walk", "run", "jump", "fall", "climb", "swim", "sit", "land", "crouch", "prone", "sprint", "stand", "mood", "dance", "emote" }
 
@@ -117,11 +119,18 @@ local function matchTrack(track)
 	end
 end
 
+-- Track every animation we sped up so we can put it BACK to speed 1 when disabled --
+-- otherwise the boosted speed sticks on looping anims and bugs your character out.
+local spedTracks = setmetatable({}, { __mode = "k" })
+local function restoreSped()
+	for t in pairs(spedTracks) do pcall(function() t:AdjustSpeed(1) end); spedTracks[t] = nil end
+end
 local function applyTo(track)
 	if not matchTrack(track) then return end
-	local mode = (Options.animMode and Options.animMode.Value) or "Cancel (stop)"
+	local mode = (Options.animMode and Options.animMode.Value) or "Speed-up"
 	if mode == "Speed-up" then
 		pcall(function() track:AdjustSpeed((Options.animSpeed and Options.animSpeed.Value) or 16) end)
+		spedTracks[track] = true
 	else
 		pcall(function() track:Stop(0) end)
 	end
@@ -145,7 +154,8 @@ return {
 		local g = ctx:Groupbox("Animation Cancel", "left")
 		g:AddLabel("Stops/speeds the per-shot animation so it\nstops gating your fire rate. Client lever only\n-- confirm via your weapon's actual rate.", true)
 		g:AddToggle("animCancelEnabled", { Text = "Enable", Default = false, Tooltip = "Cancel/speed matching animations every frame. Watch your weapon's REAL fire rate (or the Artillery 'Accepted' readout) to confirm it actually unlocked faster shots. (Default: OFF)" }); ctx:Control("animCancelEnabled")
-		g:AddDropdown("animMode", { Text = "Mode", AllowNull = false, Multi = false, Values = { "Cancel (stop)", "Speed-up" }, Default = "Cancel (stop)", Tooltip = "Cancel = Stop() the track instantly (best when the gun waits on the track).\nSpeed-up = AdjustSpeed() so it finishes fast (gentler, less obvious)." }); ctx:Control("animMode")
+		Toggles.animCancelEnabled:OnChanged(function() if not Toggles.animCancelEnabled.Value then restoreSped() end end)
+		g:AddDropdown("animMode", { Text = "Mode", AllowNull = false, Multi = false, Values = { "Cancel (stop)", "Speed-up" }, Default = "Speed-up", Tooltip = "Cancel = Stop() the track instantly (best when the gun waits on the track).\nSpeed-up = AdjustSpeed() so it finishes fast (gentler, less obvious)." }); ctx:Control("animMode")
 		g:AddLabel("WARNING: 'Cancel (stop)' can BRICK state-machine\nmelee (sword combat: stuck, can't swing, until you die).\nUse 'Speed-up' for melee; Cancel suits guns/bows.", true)
 		g:AddSlider("animSpeed", { Text = "Speed-up x", Min = 2, Max = 50, Default = 16, Rounding = 0, Tooltip = "Multiplier for Speed-up mode." }); ctx:Control("animSpeed")
 		g:AddDropdown("animFilter", { Text = "Match", AllowNull = false, Multi = false, Values = { "Keywords", "Watched only", "All but movement" }, Default = "Keywords", Tooltip = "Keywords = match the track name against the list below (+ any Learned ids).\nWatched only = ONLY the ids you Learned (surgical -- safest).\nAll but movement = everything except idle/walk/run/jump etc. (aggressive)." }); ctx:Control("animFilter")
@@ -219,7 +229,7 @@ return {
 			end
 		end)
 
-		pluginCleanup = function() pcall(saveWatched) end
+		pluginCleanup = function() pcall(restoreSped); pcall(saveWatched) end
 	end,
 	unload = function() if pluginCleanup then pcall(pluginCleanup); pluginCleanup = nil end end,
 }

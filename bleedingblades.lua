@@ -335,7 +335,8 @@ return {
 		-- targets to choose who. Best-effort: the per-player HeightDetect + server anti-
 		-- teleport may flag big blips, so keep Strike Distance small + Return Delay short.
 		local gGhost = ctx:Groupbox("Ghost Strike (desync)", "left")
-		local lblGhost = gGhost:AddLabel("Target: nearest. Cycle + Strike on keys.", true)
+		local lblGhost = gGhost:AddLabel("OFF by default. It teleports your REAL body\n(BB rubberbands + logs it). Enable only to try.", true)
+		gGhost:AddToggle("bbGhostEnabled", { Text = "Enable Ghost (teleports you)", Default = false, Tooltip = "Master switch -- OFF = the F/G/T keys do nothing. BB validates position server-side, so this moves your real body and gets rubberbanded + logged. Left here but OFF. (Default: OFF)" }); C("bbGhostEnabled")
 		local enemyList, enemyIdx = {}, 0
 		local function myHRP()
 			local c = lPlayer.Character
@@ -379,6 +380,7 @@ return {
 		end
 		local ghostBusy = false
 		local function ghostStrike()
+			if not (Toggles.bbGhostEnabled and Toggles.bbGhostEnabled.Value) then Library:Notify("Ghost disabled (enable it in the Blades tab)"); return end
 			if ghostBusy then return end
 			local hrp = myHRP(); if not hrp then return end
 			local t = curTarget()
@@ -440,6 +442,7 @@ return {
 		end
 		ctx:Connect(RunService.Heartbeat, function()
 			if not ghostHolding then return end
+			if not (Toggles.bbGhostEnabled and Toggles.bbGhostEnabled.Value) then return end
 			local hrp = myHRP(); if not hrp then return end
 			local t = curTarget(); if not t then return end
 			local thrp = t.char:FindFirstChild("HumanoidRootPart"); if not thrp then return end
@@ -624,13 +627,24 @@ return {
 		--    the remote + how the hit is built -- works even when the hook captures nothing.
 		local gCap = ctx:Groupbox("Capture / Inspect", "left")
 		local lblCap = gCap:AddLabel("Capture: swing once. Inspect: no hook.", true)
-		local COMBAT_NAMES = { PHit = true, CreateProjectile = true, Mount = true, MountCombat = true, MountSmash = true, Kick = true, ItemThrow = true, WaistRotation = true, HelmRemove = true, Doll = true }
+		-- Skip the constant/noisy packets so a real hit's remote isn't buried; log everything else.
+		local NOISE = { WaistRotation = true, Replicate = true, Playsound = true, Signal = true }
 		local capLog, capActive, hookInstalled = {}, false, false
 		local function fmtArg(a)
 			local ta = typeof(a)
 			if ta == "Instance" then local ok, p = pcall(function() return a:GetFullName() end); return "Instance:" .. (ok and p or a.Name) end
 			if ta == "Vector3" or ta == "CFrame" or ta == "Color3" then return ta .. ":" .. tostring(a) end
-			if ta == "table" then return "table{...}" end
+			if ta == "table" then
+				local parts = {}
+				for kk, vv in pairs(a) do parts[#parts + 1] = tostring(kk) .. "=" .. (typeof(vv) == "Instance" and vv:GetFullName() or tostring(vv)); if #parts >= 10 then break end end
+				return "table{" .. table.concat(parts, ",") .. "}"
+			end
+			if ta == "string" then
+				-- serialized/binary packet: show length + printable + hex so we can decode it
+				local printable = (a:gsub("[^%g ]", ".")):sub(1, 48)
+				local hex = (a:sub(1, 48):gsub(".", function(c) return string.format("%02x", string.byte(c)) end))
+				return ("string(len=%d) '%s' hex=%s"):format(#a, printable, hex)
+			end
 			return ta .. ":" .. tostring(a)
 		end
 		local function ensureCapHook()
@@ -643,7 +657,7 @@ return {
 						local m = getnamecallmethod()
 						if m == "FireServer" or m == "InvokeServer" then
 							local nm = ""; pcall(function() nm = self.Name end)
-							if COMBAT_NAMES[nm] then
+							if nm ~= "" and not NOISE[nm] then
 								local args, parts, k = { ... }, { nm .. " (" .. m .. ")" }, select("#", ...)
 								for i = 1, k do parts[#parts + 1] = "[" .. i .. "] " .. fmtArg(args[i]) end
 								table.insert(capLog, table.concat(parts, "  |  "))
@@ -661,7 +675,7 @@ return {
 		gCap:AddButton("Capture Combat (swing once)", function()
 			if not ensureCapHook() then return end
 			capLog = {}; capActive = true
-			Library:Notify("CAPTURING 15s -- swing / shoot ONE attack now")
+			Library:Notify("CAPTURING 15s -- FIRE A BOW at an enemy now (and land a melee hit)")
 			pcall(function() lblCap:SetText("CAPTURING... attack now (15s)") end)
 			task.delay(15, function()
 				capActive = false
@@ -673,6 +687,22 @@ return {
 				pcall(function() lblCap:SetText("Capture: " .. #capLog .. " call(s) -> file") end)
 			end)
 		end):AddToolTip("Scoped __namecall hook (DETECTABLE while on, auto-stops 15s) logging Combat.* FireServer calls + args. Swing/shoot ONCE. No filter to get wrong.")
+		-- During capture, also log newly-spawned arrow/projectile instances + their attributes
+		-- and child values -- this is where the server-issued ProjectileID lives when you fire.
+		ctx:Connect(Workspace.DescendantAdded, function(inst)
+			if not capActive then return end
+			local nm = (inst.Name or ""):lower()
+			if nm:find("arrow") or nm:find("projectile") or nm:find("firebox") or nm:find("bolt") or nm:find("javelin") then
+				task.spawn(function()
+					task.wait(0.05)
+					local parts = { "PROJECTILE " .. inst.ClassName .. " '" .. inst.Name .. "'" }
+					pcall(function() for an, av in pairs(inst:GetAttributes()) do parts[#parts + 1] = "  attr " .. an .. " = " .. tostring(av) end end)
+					pcall(function() for _, d in ipairs(inst:GetDescendants()) do if d:IsA("ValueBase") then parts[#parts + 1] = "  val " .. d.Name .. " = " .. tostring(d.Value) end end end)
+					table.insert(capLog, table.concat(parts, "\n"))
+					if #capLog > 40 then table.remove(capLog, 1) end
+				end)
+			end
+		end)
 		gCap:AddButton("Inspect Combat Scripts", function()
 			local lines = { "=== Combat Script Inspect ===", "PlaceId: " .. tostring(game.PlaceId), "" }
 			local seen = 0
@@ -725,7 +755,7 @@ return {
 		gAmmo:AddSlider("bbArrowAmt", { Text = "Amount", Min = 1, Max = 999, Default = 99, Rounding = 0 }); C("bbArrowAmt")
 		gAmmo:AddInput("bbArrowName", { Text = "Manual value name", Default = "", Tooltip = "Optional exact Value name to also pin (e.g. 'Arrows'). Blank = auto-scan." }); C("bbArrowName")
 		local lblAmmo = gAmmo:AddLabel("Inf arrows: off", true)
-		local AMMO_W = { "arrow", "ammo", "bolt", "quiver", "shaft", "round", "projectile", "reserve" }
+		local AMMO_W = { "arrow", "ammo", "bolt", "quiver", "shaft", "round", "projectile", "reserve", "javelin", "pilum", "pila", "throw", "dart", "throwable", "spear" }
 		local function isNumV(d) return d:IsA("IntValue") or d:IsA("NumberValue") or d:IsA("DoubleConstrainedValue") or d:IsA("IntConstrainedValue") end
 		local lastAmmo = 0
 		ctx:Connect(RunService.Heartbeat, function()
@@ -788,6 +818,77 @@ return {
 					end
 				end
 			end)
+		end)
+
+		-- ===== Bow Silent Aim (projectile homing -- the no-forge method) =======
+		-- "Silent aim for the bow": when YOU fire (a new arrow spawns near you), steer it into the
+		-- nearest FOV enemy. If the arrow is client-simulated (you own it) it curves into the
+		-- target and the game's OWN hit + PHit fire LEGIT -- no forging, no ProjectileID problem.
+		-- If the server simulates the arrow, our steering is ignored (harmless no-op). Best-effort.
+		local gBowAim = ctx:Groupbox("Bow Silent Aim (exp)", "left")
+		gBowAim:AddToggle("bbBowAim", { Text = "Home arrows to target", Default = false, Tooltip = "Steer your fired arrow into the nearest FOV enemy. Works if the arrow is client-owned; no-op if server-simulated. (Default: OFF)" }); C("bbBowAim")
+		gBowAim:AddSlider("bbBowFov", { Text = "FOV (deg)", Min = 5, Max = 180, Default = 60, Rounding = 0 }); C("bbBowFov")
+		gBowAim:AddSlider("bbBowRange", { Text = "Range", Min = 50, Max = 2000, Default = 700, Rounding = 0 }); C("bbBowRange")
+		local lblBow = gBowAim:AddLabel("Bow aim: off", true)
+		local homing = setmetatable({}, { __mode = "k" })
+		local function fovTarget()
+			local cam = Workspace.CurrentCamera
+			local hrp = lPlayer.Character and lPlayer.Character:FindFirstChild("HumanoidRootPart")
+			if not (cam and hrp) then return nil end
+			local fov = (Options.bbBowFov and Options.bbBowFov.Value) or 60
+			local range = (Options.bbBowRange and Options.bbBowRange.Value) or 700
+			local look = cam.CFrame.LookVector
+			local best, bestAng
+			for _, plr in ipairs(Players:GetPlayers()) do
+				if plr ~= lPlayer and not sameTeam(plr) then
+					local ch = plr.Character
+					local th = ch and (ch:FindFirstChild("HumanoidRootPart") or ch:FindFirstChild("Head"))
+					local hu = ch and ch:FindFirstChildWhichIsA("Humanoid")
+					if th and hu and hu.Health > 0 then
+						local dir = th.Position - cam.CFrame.Position
+						if dir.Magnitude <= range and dir.Magnitude > 0.1 then
+							local ang = math.deg(math.acos(math.clamp(look:Dot(dir.Unit), -1, 1)))
+							if ang <= fov and (not bestAng or ang < bestAng) then bestAng = ang; best = th end
+						end
+					end
+				end
+			end
+			return best
+		end
+		-- a freshly-spawned arrow near you = yours -> start homing it
+		ctx:Connect(Workspace.DescendantAdded, function(inst)
+			if not (Toggles.bbBowAim and Toggles.bbBowAim.Value) then return end
+			if not inst:IsA("BasePart") then return end
+			local nm = inst.Name:lower()
+			if not (nm:find("arrow") or nm:find("projectile") or nm:find("bolt") or nm:find("firebox")) then return end
+			local hrp = lPlayer.Character and lPlayer.Character:FindFirstChild("HumanoidRootPart")
+			if not hrp then return end
+			task.spawn(function()
+				task.wait()
+				if inst.Parent and (inst.Position - hrp.Position).Magnitude < 35 then homing[inst] = true end
+			end)
+		end)
+		ctx:Connect(RunService.Heartbeat, function()
+			if not (Toggles.bbBowAim and Toggles.bbBowAim.Value) then return end
+			local tgt = fovTarget()
+			local n = 0
+			for proj in pairs(homing) do
+				if proj and proj.Parent then
+					n = n + 1
+					if tgt and tgt.Parent then
+						pcall(function()
+							local to = tgt.Position - proj.Position
+							if to.Magnitude > 0.1 then
+								local spd = proj.AssemblyLinearVelocity.Magnitude
+								if spd < 10 then spd = 250 end
+								proj.AssemblyLinearVelocity = to.Unit * spd
+								proj.CFrame = CFrame.lookAt(proj.Position, tgt.Position)
+							end
+						end)
+					end
+				else homing[proj] = nil end
+			end
+			pcall(function() lblBow:SetText(("Bow aim: %s | homing %d"):format(tgt and "TARGET" or "no target", n)) end)
 		end)
 
 		pluginCleanup = function()
