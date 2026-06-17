@@ -40,6 +40,8 @@ return {
 		g:AddToggle("dotEspEnemies", { Text = "Show Enemies", Default = false, Tooltip = "Dot players NOT on your team. (Default: OFF)" }); C("dotEspEnemies")
 		g:AddToggle("dotEspTeamColor", { Text = "Team Colors", Default = true, Tooltip = "Colour dots by relationship (uses your ESP enemy/ally colours). Off = ally blue / enemy orange. (Default: ON)" }); C("dotEspTeamColor")
 		g:AddSlider("dotEspSize", { Text = "Dot Size", Min = 2, Max = 14, Default = 5, Rounding = 0 }); C("dotEspSize")
+		g:AddToggle("dotEspDynamic", { Text = "Dynamic Sizing", Default = false, Tooltip = "Scale dots by distance -- bigger up close, base size far away, so close dots stay visible instead of getting lost. (Default: OFF)" }); C("dotEspDynamic")
+		g:AddSlider("dotEspMaxScale", { Text = "Close-up scale x", Min = 1, Max = 8, Default = 3, Rounding = 1, Tooltip = "With Dynamic Sizing: how much bigger a dot can get up close." }); C("dotEspMaxScale")
 		g:AddSlider("dotEspHeight", { Text = "Height (studs)", Min = 0, Max = 10, Default = 3, Rounding = 1, Tooltip = "How far above the head to float the dot." }); C("dotEspHeight")
 		g:AddSlider("dotEspDist", { Text = "Max Distance", Min = 0, Max = 3000, Default = 0, Rounding = 0, Tooltip = "0 = unlimited. Its OWN distance, separate from HBE." }); C("dotEspDist")
 
@@ -83,6 +85,8 @@ return {
 			local lr = headOf(lPlayer.Character)
 			local maxd = (Options.dotEspDist and Options.dotEspDist.Value) or 0
 			local size = (Options.dotEspSize and Options.dotEspSize.Value) or 5
+			local dynamic = Toggles.dotEspDynamic and Toggles.dotEspDynamic.Value
+			local maxScale = (Options.dotEspMaxScale and Options.dotEspMaxScale.Value) or 3
 			local height = (Options.dotEspHeight and Options.dotEspHeight.Value) or 3
 			local showA = Toggles.dotEspAllies and Toggles.dotEspAllies.Value
 			local showE = Toggles.dotEspEnemies and Toggles.dotEspEnemies.Value
@@ -104,7 +108,8 @@ return {
 								if onScreen and sp.Z > 0 then
 									n = n + 1
 									local d = dots[n]
-									d.Radius = size
+									-- Dynamic: scale up close (sp.Z = camera depth in studs); never below base.
+									d.Radius = (dynamic and sp.Z > 1) and (size * math.clamp(120 / sp.Z, 1, maxScale)) or size
 									d.Color = dotColor(plr)
 									d.Position = Vector2.new(sp.X, sp.Y)
 									d.Visible = true
