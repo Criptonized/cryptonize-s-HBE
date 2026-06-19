@@ -1,22 +1,24 @@
--- CryptsHBE plugin: Remote Spy (tab "Spy")
+-- CryptsHBE plugin: Remote Spy + Packet Cracker + Replay (tab "Spy")
 -- ============================================================================
--- A consolidated, up-to-date remote spy in the spirit of SimpleSpy + Hydroxide
--- (both archived/outdated). Logs outgoing FireServer/InvokeServer calls with
--- their args + the CALLING SCRIPT, generates a reproducible Lua script for any
--- captured call (Remote -> Script), can Block / Ignore remotes by name, Replay a
--- call, and dump every remote/function in the game to a .txt.
+-- The single remote-tooling hub. Consolidates SimpleSpy + Hydroxide (spy/closure
+-- scan), the Packet Cracker (serializer decode/forge), the old Remote Sniffer
+-- (capture + auto-replay + retarget) and Remote Replay (manual fire-at-nearest) onto
+-- one "Spy" tab (merged 2026-06-19) so the whole workflow -- capture -> decode ->
+-- forge/replay -> fire -- lives in one place.
 --
--- The value serializer (Remote -> Script arg generator) is a SimpleSpy-grade port
--- (78n/SimpleSpy) + the closure scanner follows Hydroxide (Upbolt/Hydroxide). It
--- is built ONCE onto the Bridge (Bridge.Serialize/PathTo/GetNilHelper) so the
--- Packet Cracker shares the exact same robust impl. Every executor global is
--- feature-detected (Potassium != Synapse) and wrapped in pcall.
+-- The value serializer (Remote -> Script + packet decode display) is a SimpleSpy-grade
+-- port (78n/SimpleSpy) and the closure scanner follows Hydroxide (Upbolt/Hydroxide),
+-- built ONCE onto the Bridge (Bridge.Serialize/PathTo/GetNilHelper). Every executor
+-- global is feature-detected (Potassium != Synapse) and wrapped in pcall.
 --
 -- DETECTABLE: the live spy installs a scoped __namecall hook (read-only unless you
--- Block). OFF by default, inert when off. The dumps are read-only + need no hook.
+-- Block). Replay/forge/manual-fire send real remote calls. OFF by default, inert when
+-- off. The dumps are read-only + need no hook.
 -- ============================================================================
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
+local RS = game:GetService("ReplicatedStorage")
 local lPlayer = Players.LocalPlayer
 local Bridge = getgenv().CryptsHBE
 local pluginCleanup = nil
@@ -24,8 +26,7 @@ local pluginCleanup = nil
 -- ============================================================================
 -- SHARED SERIALIZER (build once on the Bridge) -- SimpleSpy-grade value->Lua.
 -- Ported from 78n/SimpleSpy (i2p / v2s / t2s) + Upbolt/Hydroxide; feature-detected
--- for Potassium. Both RemoteSpy and PacketCracker reference Bridge.Serialize so
--- there is exactly one implementation and no drift.
+-- for Potassium. Built here so the Bridge.Serialize contract exists for any module.
 -- ============================================================================
 if Bridge and not Bridge.Serialize then
 	local hugeP, hugeN = math.huge, -math.huge
@@ -190,6 +191,25 @@ local serialize = Bridge.Serialize
 local pathTo = Bridge.PathTo
 local function ser(v) return serialize(v) end
 
+-- ---- Packet Cracker word lists + Sniffer combat keywords --------------------
+local DEC_W = { "deserialize", "deserialise", "unpack", "decode", "read", "deser", "frombuffer", "unmarshal", "parse" }
+local ENC_W = { "serialize", "serialise", "pack", "encode", "write", "tobuffer", "marshal", "build" }
+local MOD_W = { "serial", "packet", "network", "buffer", "byte", "net", "squash", "blink", "bytenet", "marshal", "replion", "remote" }
+local COMBAT_WORDS = { "hit", "damage", "dmg", "swing", "attack", "block", "parry", "shoot", "fire", "bow", "draw",
+	"melee", "stab", "slash", "hurt", "combat", "weapon", "strike", "wound", "kill", "buy", "purchase", "shop", "spend", "cash", "ammo", "reload" }
+local function matchAny(s, set) s = tostring(s):lower() for _, w in ipairs(set) do if s:find(w, 1, true) then return true end end return false end
+
+-- quick binary-aware preview for raw packet strings (the encoded blob)
+local function hexPreview(v)
+	if type(v) == "string" then
+		if #v > 0 and v:find("[^%g ]") then
+			return ("<bin len=%d hex=%s>"):format(#v, (v:sub(1, 24):gsub(".", function(c) return string.format("%02x", c:byte()) end)))
+		end
+		return string.format("%q", v)
+	end
+	return tostring(v)
+end
+
 local function writeOut(fname, text)
 	if Bridge and Bridge.SessionName then pcall(function() fname = Bridge:SessionName(fname) end) end
 	pcall(function()
@@ -211,15 +231,43 @@ return {
 		local order = 0
 		local blocked = {}     -- [remoteName]=true -> suppress the real call
 		local ignored = {}     -- [remoteName]=true -> don't log
+		local needRefresh = false
+		local lastRef = 0
+
+		-- nearest enemy (range optional, team-ignore optional) -> player, position
+		local function myRoot()
+			local c = lPlayer.Character
+			return c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Head"))
+		end
+		local function nearestEnemy(maxRange, ignoreTeam)
+			local lr = myRoot(); if not lr then return nil end
+			local best, bpos, bd
+			for _, p in ipairs(Players:GetPlayers()) do
+				if p ~= lPlayer then
+					local ally = false
+					if ignoreTeam then pcall(function() if lPlayer.Team or p.Team then ally = (lPlayer.Team == p.Team) end end) end
+					local pc = p.Character
+					local pr = pc and (pc:FindFirstChild("HumanoidRootPart") or pc:FindFirstChild("Head"))
+					local hum = pc and pc:FindFirstChildWhichIsA("Humanoid")
+					if pr and not ally and (not hum or hum.Health > 0) then
+						local d = (pr.Position - lr.Position).Magnitude
+						if (not maxRange or d <= maxRange) and (not bd or d < bd) then best, bpos, bd = p, pr.Position, d end
+					end
+				end
+			end
+			return best, bpos
+		end
 
 		local gSpy = ctx:Groupbox("Remote Spy", "left")
 		gSpy:AddToggle("spyActive", { Text = "Spy Active (DETECTABLE)", Default = false, Tooltip = "Install a __namecall hook logging outgoing FireServer/InvokeServer calls + the calling script. Read-only unless you Block. OFF by default. (Default: OFF)" }); C("spyActive")
-		gSpy:AddInput("spyFilter", { Text = "Name contains", Default = "", Tooltip = "Only log remotes whose name contains this (blank = all)." }); C("spyFilter")
+		gSpy:AddToggle("sniffCombatOnly", { Text = "Combat/economy only", Default = false, Tooltip = "Only log remotes whose name matches hit/damage/shoot/buy/... -- cuts noise when hunting a combat/shop remote. (Default: OFF)" }); C("sniffCombatOnly")
+		gSpy:AddInput("spyFilter", { Text = "Name contains", Default = "", Tooltip = "Only log remotes whose name contains this (blank = all). e.g. Combat / PHit / Projectile." }); C("spyFilter")
 		local lblSpy = gSpy:AddLabel("Spy off.", true)
-		gSpy:AddButton("Clear Log", function() calls = {}; byKey = {}; order = 0; pcall(function() lblSpy:SetText("Cleared.") end) end)
+		gSpy:AddButton("Clear Log", function() calls = {}; byKey = {}; order = 0; needRefresh = true; pcall(function() lblSpy:SetText("Cleared.") end) end)
 
-		local gSel = ctx:Groupbox("Captured / Selected", "right")
-		gSel:AddDropdown("spyPick", { Text = "Captured call", Values = {}, Multi = false, AllowNull = true, Tooltip = "Pick a captured call to script/replay/block." }); C("spyPick")
+		local gSel = ctx:Groupbox("Captured / Selected + Replay", "right")
+		gSel:AddDropdown("spyPick", { Text = "Captured call", Values = {}, Multi = false, AllowNull = true, Tooltip = "Pick a captured call to script/decode/replay/block. Fills automatically while Auto-refresh is on." }); C("spyPick")
+		gSel:AddToggle("spyAutoRefresh", { Text = "Auto-refresh list", Default = true, Tooltip = "Repopulate the Captured call dropdown automatically (~1/s) as new calls arrive, so you don't have to press Refresh List. (Default: ON)" }); C("spyAutoRefresh")
 		local lblSel = gSel:AddLabel("Pick a call.", true)
 		local pickMap = {}
 		local function refreshList()
@@ -234,6 +282,13 @@ return {
 		end
 		gSel:AddButton("Refresh List", refreshList)
 		local function selected() return pickMap[Options.spyPick.Value] end
+
+		-- auto-refresh pump (Heartbeat, throttled, main-thread -- never refresh from the hook)
+		ctx:Connect(RunService.Heartbeat, function()
+			if needRefresh and Toggles.spyAutoRefresh and Toggles.spyAutoRefresh.Value and (tick() - lastRef) > 1 then
+				needRefresh = false; lastRef = tick(); pcall(refreshList)
+			end
+		end)
 
 		Options.spyPick:OnChanged(function()
 			local c = selected()
@@ -265,13 +320,43 @@ return {
 			pcall(function() if setclipboard then setclipboard(code) end end)
 			Library:Notify("Script -> CryptsHBE/" .. fn .. " (+ clipboard)")
 		end):AddToolTip("Writes a runnable Lua script that reproduces this exact call (SimpleSpy-grade serializer: buffers/nil-parented/all userdata), to a file AND your clipboard.")
+
+		-- ---- capture replay (old Sniffer -> Fire): once / auto / retargeted ----
+		gSel:AddToggle("sniffRetarget", { Text = "Retarget replay -> nearest enemy", Default = false, Tooltip = "When replaying, swap Player args -> nearest enemy and Vector3 args -> their position (for damage/hit remotes). (Default: OFF)" }); C("sniffRetarget")
+		local function buildArgs(c)
+			local args = {}
+			for i = 1, (c.argc or 0) do args[i] = c.rawArgs[i] end
+			if Toggles.sniffRetarget and Toggles.sniffRetarget.Value then
+				local tgt, tpos = nearestEnemy(nil, true)
+				for i = 1, (c.argc or 0) do
+					local a = args[i]
+					if typeof(a) == "Instance" and a:IsA("Player") and tgt then args[i] = tgt
+					elseif typeof(a) == "Vector3" and tpos then args[i] = tpos end
+				end
+			end
+			return args, (c.argc or 0)
+		end
+		local function fireCaptured(c)
+			if not (c.inst and c.inst.Parent) then Library:Notify("That remote is gone"); return false end
+			local args, n = buildArgs(c)
+			pcall(function()
+				if c.method == "FireServer" then c.inst:FireServer(unpack(args, 1, n))
+				elseif c.method == "InvokeServer" then c.inst:InvokeServer(unpack(args, 1, n)) end
+			end)
+			return true
+		end
 		gSel:AddButton("Replay Once", function()
 			local c = selected(); if not c then Library:Notify("Pick a call first"); return end
-			pcall(function()
-				if c.method == "FireServer" then c.inst:FireServer(unpack(c.rawArgs, 1, c.argc))
-				elseif c.method == "InvokeServer" then c.inst:InvokeServer(unpack(c.rawArgs, 1, c.argc)) end
-			end)
-			Library:Notify("Replayed " .. c.name)
+			if fireCaptured(c) then Library:Notify("Replayed " .. c.name) end
+		end):AddToolTip("Re-send the captured call's exact payload one time (with retarget if enabled).")
+		gSel:AddToggle("sniffAutoReplay", { Text = "Auto-Replay (farm)", Default = false, Tooltip = "Re-send the selected captured call repeatedly at the rate below (farm a kill/award remote, or a bolt gun's Shoot for full-auto). (Default: OFF)" }); C("sniffAutoReplay")
+		gSel:AddSlider("sniffReplayRate", { Text = "Replays / sec", Min = 1, Max = 30, Default = 5, Rounding = 0 }); C("sniffReplayRate")
+		local lastCapReplay = 0
+		ctx:Connect(RunService.Heartbeat, function()
+			if not (Toggles.sniffAutoReplay and Toggles.sniffAutoReplay.Value) then return end
+			local c = selected(); if not c then return end
+			local now = tick(); if now - lastCapReplay < 1 / math.max(1, Options.sniffReplayRate.Value) then return end; lastCapReplay = now
+			fireCaptured(c)
 		end)
 		gSel:AddButton("Block this remote", function()
 			local c = selected(); if not c then return end
@@ -286,6 +371,7 @@ return {
 
 		-- ---- the hook ------------------------------------------------------
 		local function passFilter(name)
+			if Toggles.sniffCombatOnly and Toggles.sniffCombatOnly.Value and not matchAny(name, COMBAT_WORDS) then return false end
 			local f = (Options.spyFilter and Options.spyFilter.Value or "")
 			if f == "" then return true end
 			return tostring(name):lower():find(f:lower(), 1, true) ~= nil
@@ -307,6 +393,7 @@ return {
 				byKey[key] = e; calls[#calls + 1] = e
 				if #calls > 120 then table.remove(calls, 1) end
 			end
+			needRefresh = true   -- pumped to the dropdown on Heartbeat (not from this hook thread)
 			-- expose the latest binary packet so the Packet Cracker can decode it
 			pcall(function()
 				for i = 1, argc do
@@ -396,7 +483,73 @@ return {
 			local fn = writeOut("remotes_functions_" .. tostring(game.PlaceId) .. ".txt", table.concat(L, "\n"))
 			Library:Notify(("Dumped %d remotes + %d scripts -> CryptsHBE/%s"):format(n, sc, fn))
 		end):AddToolTip("Read-only: every RemoteEvent/Function + BindableEvent/Function (incl. nil-parented) + every Script/ModuleScript + a GC function count, to a .txt.")
+		gDump:AddButton("Save capture log (busiest) -> .txt", function()
+			local arr = {}
+			for _, c in ipairs(calls) do arr[#arr + 1] = c end
+			table.sort(arr, function(a, b) return a.count > b.count end)
+			local L = { "=== CryptsHBE Capture Log ===", "PlaceId: " .. tostring(game.PlaceId), "" }
+			for _, c in ipairs(arr) do
+				local path = c.name; pcall(function() if c.inst then path = c.inst:GetFullName() end end)
+				local argParts = {}; for i = 1, c.argc do argParts[#argParts + 1] = ser(c.rawArgs[i]) end
+				L[#L + 1] = ("[x%d] %s:%s @ %s\n      args: %s"):format(c.count, c.name, c.method, path, table.concat(argParts, ", "):sub(1, 300))
+			end
+			L[#L + 1] = ""; L[#L + 1] = "Total captured signatures: " .. #arr
+			local fn = writeOut("capture_log_" .. tostring(game.PlaceId) .. ".txt", table.concat(L, "\n"))
+			Library:Notify("Capture log -> CryptsHBE/" .. fn)
+		end):AddToolTip("Save the captured calls (busiest first) + their args to a .txt -- the old Sniffer's Save Log.")
 		gDump:AddLabel("Combines the old Sniffer + Remote replay.\nFull Hydroxide closure-editor GUI isn't\npossible in this menu; use Recon/DeepDive\nfor upvalue/constant dumps.", true)
+
+		-- ===== Manual Replay (no capture) -- old Remote Replay plugin ========
+		-- For RemoteEvent-damage games: pick ANY remote + an arg type and fire it at the
+		-- nearest enemy (once or as an aura). No capture/hook needed. Honeypot-guarded.
+		local gMan = ctx:Groupbox("Manual Replay (no capture)", "left")
+		gMan:AddLabel("RemoteEvent-damage games. Refresh, pick the\ndamage remote + an arg, fire at the nearest target.", true)
+		local rrRemotes = {}
+		gMan:AddDropdown("rrRemote", { Text = "Remote", Values = {}, Multi = false, AllowNull = true, Tooltip = "Discovered RemoteEvents (Refresh to populate)." }); C("rrRemote")
+		gMan:AddDropdown("rrArg", { Text = "Argument", Values = { "Target Character", "Target Player", "Target HumanoidRootPart", "Target Position", "None" }, Default = "Target Character", Multi = false, AllowNull = false, Tooltip = "What to pass to FireServer. Match the game's damage remote signature." }); C("rrArg")
+		gMan:AddSlider("rrRange", { Text = "Range (studs)", Min = 5, Max = 120, Default = 25, Rounding = 0 }); C("rrRange")
+		gMan:AddToggle("rrIgnoreTeam", { Text = "Ignore Team", Default = true }); C("rrIgnoreTeam")
+		local function refreshRemotes()
+			rrRemotes = {}; local names, count = {}, 0
+			pcall(function()
+				for _, d in ipairs(game:GetDescendants()) do
+					if d:IsA("RemoteEvent") then
+						count = count + 1; if count > 4000 then break end
+						local key, i = d.Name, 2
+						while rrRemotes[key] do key = d.Name .. " #" .. i; i = i + 1 end
+						rrRemotes[key] = d; names[#names + 1] = key
+					end
+				end
+			end)
+			table.sort(names)
+			Options.rrRemote.Values = names; pcall(function() Options.rrRemote:SetValues() end)
+			Library:Notify("Found " .. #names .. " RemoteEvents")
+		end
+		gMan:AddButton("Refresh Remotes", refreshRemotes):AddToolTip("Scan the game for RemoteEvents.")
+		local function fireManual(plr)
+			local remote = rrRemotes[Options.rrRemote.Value or ""]
+			if not remote then Library:Notify("Pick a remote first"); return end
+			if Bridge.isHoneypot and Bridge.isHoneypot(remote) then Library:Notify("That remote is a honeypot - skipped"); return end
+			local c, mode = plr.Character, Options.rrArg.Value
+			local arg
+			if mode == "Target Player" then arg = plr
+			elseif mode == "Target Character" then arg = c
+			elseif mode == "Target HumanoidRootPart" then arg = c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Head"))
+			elseif mode == "Target Position" then local nn = c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Head")); arg = nn and nn.Position end
+			pcall(function() if mode == "None" then remote:FireServer() else remote:FireServer(arg) end end)
+		end
+		gMan:AddButton("Fire at Nearest", function()
+			local t = nearestEnemy(Options.rrRange.Value, Toggles.rrIgnoreTeam.Value)
+			if t then fireManual(t) else Library:Notify("No target in range") end
+		end):AddToolTip("Fire the selected remote once at the nearest valid target.")
+		gMan:AddToggle("rrAuto", { Text = "Auto-Fire (aura)", Default = false, Tooltip = "Repeatedly fire the remote at the nearest target. (Default: OFF)" }); C("rrAuto")
+		gMan:AddSlider("rrRate", { Text = "Auto Rate (/s)", Min = 1, Max = 20, Default = 5, Rounding = 0 }); C("rrRate")
+		local rrLast = 0
+		ctx:Connect(RunService.Heartbeat, function()
+			if not (Toggles.rrAuto and Toggles.rrAuto.Value) then return end
+			local now = tick(); if now - rrLast < (1 / math.max(1, Options.rrRate.Value)) then return end; rrLast = now
+			local t = nearestEnemy(Options.rrRange.Value, Toggles.rrIgnoreTeam.Value); if t then fireManual(t) end
+		end)
 
 		-- ===== Closure / Upvalue Scanner (Hydroxide's upvalue scanner) ======
 		-- Scan the GC for Lua closures, list them by name + upvalue count, dump/modify their
@@ -473,6 +626,105 @@ return {
 			pcall(function() debug.setupvalue(fn, idx, v) end)
 			Library:Notify("Set upvalue [" .. idx .. "]")
 		end):AddToolTip("Modify a closure's upvalue (Hydroxide-style). Numbers/bools/strings.")
+
+		-- ============================================================================
+		-- PACKET CRACKER (merged in) -- find the game's OWN serializer and reuse it to
+		-- DECODE the binary packet captured above + ENCODE a forged one. The crack loop
+		-- lives on this tab: capture -> decode -> edit -> encode -> fire. Game-specific.
+		-- ============================================================================
+		local decMap, encMap = {}, {}
+		local encoded = nil
+
+		local gFind = ctx:Groupbox("Packet Cracker: Find Serializer", "left")
+		gFind:AddDropdown("pcDecoder", { Text = "Decoder (str->data)", Values = {}, Multi = false, AllowNull = true, Tooltip = "Chosen decode function. Scan first." }); C("pcDecoder")
+		gFind:AddDropdown("pcEncoder", { Text = "Encoder (data->str)", Values = {}, Multi = false, AllowNull = true, Tooltip = "Chosen encode function. Scan first." }); C("pcEncoder")
+		local lblFind = gFind:AddLabel("Scan to find serializer funcs.", true)
+		gFind:AddButton("Scan for Serializers", function()
+			decMap, encMap = {}, {}
+			local decNames, encNames = {}, {}
+			-- (a) GC closures by name -- safe, no require side effects
+			pcall(function()
+				if getgc then
+					for _, o in ipairs(getgc(false)) do
+						if type(o) == "function" then
+							local nm = ""; pcall(function() nm = tostring(debug.getinfo(o).name or "") end)
+							if nm ~= "" then
+								if matchAny(nm, DEC_W) then local l = "gc:" .. nm; if not decMap[l] then decMap[l] = o; decNames[#decNames + 1] = l end end
+								if matchAny(nm, ENC_W) then local l = "gc:" .. nm; if not encMap[l] then encMap[l] = o; encNames[#encNames + 1] = l end end
+							end
+						end
+					end
+				end
+			end)
+			-- (b) ModuleScripts named like a serializer (require shares the game cache)
+			pcall(function()
+				for _, d in ipairs(RS:GetDescendants()) do
+					if d:IsA("ModuleScript") and matchAny(d.Name, MOD_W) then
+						local ok, mod = pcall(require, d)
+						if ok and type(mod) == "table" then
+							for k, v in pairs(mod) do
+								if type(v) == "function" and type(k) == "string" then
+									if matchAny(k, DEC_W) then local l = d.Name .. "." .. k; if not decMap[l] then decMap[l] = v; decNames[#decNames + 1] = l end end
+									if matchAny(k, ENC_W) then local l = d.Name .. "." .. k; if not encMap[l] then encMap[l] = v; encNames[#encNames + 1] = l end end
+								end
+							end
+						end
+					end
+				end
+			end)
+			table.sort(decNames); table.sort(encNames)
+			Options.pcDecoder.Values = decNames; pcall(function() Options.pcDecoder:SetValues() end)
+			Options.pcEncoder.Values = encNames; pcall(function() Options.pcEncoder:SetValues() end)
+			local rep = { "=== Serializer Candidates ===", "DECODERS:" }
+			for _, n in ipairs(decNames) do rep[#rep + 1] = "  " .. n end
+			rep[#rep + 1] = "ENCODERS:"
+			for _, n in ipairs(encNames) do rep[#rep + 1] = "  " .. n end
+			writeOut("serializers_" .. tostring(game.PlaceId) .. ".txt", table.concat(rep, "\n"))
+			pcall(function() lblFind:SetText(("Decoders: %d  Encoders: %d"):format(#decNames, #encNames)) end)
+			Library:Notify(("Serializers: %d dec / %d enc"):format(#decNames, #encNames))
+		end):AddToolTip("Finds serialize/deserialize functions in the GC + serializer-named modules. Also use the Closure Scanner above -> dump the combat function's upvalues to find the exact one.")
+
+		local gDec = ctx:Groupbox("Packet Cracker: Decode", "right")
+		local lblDec = gDec:AddLabel("Capture a packet (above) first.", true)
+		gDec:AddButton("Decode Spy's Last Packet", function()
+			local fn = decMap[Options.pcDecoder.Value]
+			if not fn then Library:Notify("Pick a decoder (Scan first)"); return end
+			local pkt = Bridge and Bridge.SpyLastPacket
+			if type(pkt) ~= "string" then Library:Notify("No captured packet -- arm the Spy + do the action"); return end
+			local ok, res = pcall(fn, pkt)
+			if not ok then pcall(function() lblDec:SetText("Decode failed:\n" .. tostring(res):sub(1, 100)) end); Library:Notify("Decode failed (try another decoder)"); return end
+			local out = (Bridge and Bridge.Serialize) and Bridge.Serialize(res) or tostring(res)
+			writeOut("packet_decoded_" .. tostring(game.PlaceId) .. ".txt", "decoder: " .. Options.pcDecoder.Value .. "\npacket len: " .. #pkt .. "\nraw: " .. hexPreview(pkt) .. "\n\n" .. out)
+			pcall(function() lblDec:SetText("Decoded:\n" .. out:sub(1, 200)) end)
+			Library:Notify("Decoded -> file (see fields)")
+		end):AddToolTip("Runs the chosen decoder on the last binary packet the Spy captured, revealing its real fields (rendered as reconstructable Lua). Try each decoder until one returns a table.")
+
+		local gEnc = ctx:Groupbox("Packet Cracker: Forge + Fire", "right")
+		gEnc:AddInput("pcInput", { Text = "Data (Lua table)", Default = "", Tooltip = "A Lua table literal to encode, e.g. { projectileId = 1234, target = workspace.Players.Team1.Bob }. You can use buffer.fromstring/Vector3/instances etc." }); C("pcInput")
+		local lblEnc = gEnc:AddLabel("Encode then fire.", true)
+		gEnc:AddButton("Encode", function()
+			local fn = encMap[Options.pcEncoder.Value]
+			if not fn then Library:Notify("Pick an encoder (Scan first)"); return end
+			local raw = (Options.pcInput and Options.pcInput.Value) or ""
+			local okp, data = pcall(function() return loadstring("return " .. raw)() end)
+			if not okp then Library:Notify("Bad Lua table"); return end
+			local oke, pkt = pcall(fn, data)
+			if not oke then Library:Notify("Encode failed: " .. tostring(pkt):sub(1, 60)); return end
+			encoded = pkt
+			pcall(function() lblEnc:SetText("Encoded: " .. hexPreview(pkt):sub(1, 120)) end)
+			Library:Notify("Encoded (" .. (type(pkt) == "string" and #pkt or "?") .. " bytes)")
+		end):AddToolTip("Builds a packet from your Lua table using the game's encoder -> structurally valid.")
+		gEnc:AddButton("Fire Encoded at Spy's Last Remote", function()
+			if encoded == nil then Library:Notify("Encode something first"); return end
+			local r = Bridge and Bridge.SpyLastRemote
+			if not (typeof(r) == "Instance") then Library:Notify("No remote -- capture one above first"); return end
+			local m = (Bridge and Bridge.SpyLastMethod) or "FireServer"
+			pcall(function()
+				if m == "InvokeServer" then r:InvokeServer(encoded) else r:FireServer(encoded) end
+			end)
+			Library:Notify("Fired forged packet at " .. r.Name)
+		end):AddToolTip("Fires your forged packet through the remote the Spy last saw (e.g. PHit / CreateProjectile).")
+		gEnc:AddLabel("Loop: capture PHit above -> Decode to see\nfields -> change the target/id -> Encode ->\nFire. Uses the game's own serializer so it's\nvalid. Experimental + game-specific.", true)
 
 		pluginCleanup = function() active = false end
 	end,
