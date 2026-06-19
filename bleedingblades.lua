@@ -272,6 +272,21 @@ return {
 		-- active one differs by colour/transparency, not visibility), and there's no clean
 		-- "incoming attack direction" telegraph. So Auto-Block triggers on a real THREAT:
 		-- an enemy within Block Range whose facing is toward you (i.e. about to swing).
+		-- Read an enemy's CURRENT combat state from their playing animations (client-readable).
+		local function enemyAnimState(ch)
+			local out = { swinging = false, blocking = false, action = nil }
+			local hum = ch and ch:FindFirstChildWhichIsA("Humanoid")
+			local an = hum and hum:FindFirstChildOfClass("Animator")
+			if not an then return out end
+			pcall(function()
+				for _, t in ipairs(an:GetPlayingAnimationTracks()) do
+					local nm = tostring(t.Name):lower()
+					if nm:find("block") or nm:find("shield") or nm:find("guard") or nm:find("parry") or nm:find("raise") then out.blocking = true; out.action = t.Name end
+					if nm:find("swing") or nm:find("attack") or nm:find("slash") or nm:find("stab") or nm:find("thrust") or nm:find("lunge") or nm:find("strike") or nm:find("m1") then out.swinging = true; out.action = t.Name end
+				end
+			end)
+			return out
+		end
 		local function incomingThreat()
 			local hrp = lPlayer.Character and lPlayer.Character:FindFirstChild("HumanoidRootPart")
 			if not hrp then return false end
@@ -283,10 +298,12 @@ return {
 						local ch = plr.Character
 						local thrp = ch and ch:FindFirstChild("HumanoidRootPart")
 						local h = ch and ch:FindFirstChildWhichIsA("Humanoid")
-						if thrp and h and h.Health > 0 and (thrp.Position - hrp.Position).Magnitude <= range then
+						local dist = thrp and (thrp.Position - hrp.Position).Magnitude or 1e9
+						if thrp and h and h.Health > 0 and dist <= range then
 							local toMe = hrp.Position - thrp.Position
 							if toMe.Magnitude > 0.1 and thrp.CFrame.LookVector:Dot(toMe.Unit) > 0.4 then
-								threat = true; break
+								-- precise: block when they're actually SWINGING, or point-blank
+								if enemyAnimState(ch).swinging or dist <= range * 0.6 then threat = true; break end
 							end
 						end
 					end
@@ -891,7 +908,70 @@ return {
 			pcall(function() lblBow:SetText(("Bow aim: %s | homing %d"):format(tgt and "TARGET" or "no target", n)) end)
 		end)
 
+		-- ===== Enemy Combat State (recon for precise parry / vulnerability) ===
+		-- Reads the nearest enemy's playing animations: SWINGING / BLOCKING / which action. This is
+		-- what the auto-parry keys off (block when they actually swing). Dump LEARNS the swing/block
+		-- anim names (+ direction, if encoded) so a fully directional parry/attack can be wired.
+		local gEnemy = ctx:Groupbox("Enemy Combat State", "right")
+		local lblEnemy = gEnemy:AddLabel("Enemy: -", true)
+		gEnemy:AddButton("Dump Enemy Anims", function()
+			local lines = { "=== Enemy Combat Anims ===", "PlaceId: " .. tostring(game.PlaceId), "" }
+			for _, plr in ipairs(Players:GetPlayers()) do
+				if plr ~= lPlayer and not sameTeam(plr) then
+					local ch = plr.Character
+					local hum = ch and ch:FindFirstChildWhichIsA("Humanoid")
+					local an = hum and hum:FindFirstChildOfClass("Animator")
+					if an then
+						lines[#lines + 1] = "ENEMY " .. plr.Name
+						pcall(function() for _, t in ipairs(an:GetPlayingAnimationTracks()) do
+							lines[#lines + 1] = ("  %s  id=%s  len=%.2f  speed=%.2f"):format(tostring(t.Name), (t.Animation and t.Animation.AnimationId) or "?", t.Length or 0, t.Speed or 0)
+						end end)
+					end
+				end
+			end
+			local fn = writeOut("enemy_anims_" .. tostring(game.PlaceId) .. ".txt", lines)
+			Library:Notify("Enemy anims -> CryptsHBE/" .. fn)
+		end):AddToolTip("Dumps every enemy's currently-playing animations (name+id) -- catch them mid-swing/block to LEARN the swing/block/direction anim names for a precise directional parry.")
+		local lastEnemy = 0
+		ctx:Connect(RunService.Heartbeat, function()
+			local now = tick(); if now - lastEnemy < 0.2 then return end; lastEnemy = now
+			local t = nearestThreat()
+			if not t then pcall(function() lblEnemy:SetText("Enemy: none in range") end); return end
+			local st = enemyAnimState(t.Parent)
+			pcall(function() lblEnemy:SetText("Enemy: " .. ((st.swinging and "SWINGING " or "") .. (st.blocking and "BLOCKING " or "") .. (st.action and ("[" .. st.action .. "]") or ((not st.swinging and not st.blocking) and "idle" or "")))) end)
+		end)
+
+		-- ===== Fast Shield (kill the post-swing block delay) ==================
+		-- Speeds the local shield/equip/raise/block anim so you can block again right after a
+		-- swing (that ~1s gap IS the equip anim). Speed-up only (never Stop), restores when off.
+		local gFS = ctx:Groupbox("Fast Shield", "left")
+		gFS:AddToggle("bbFastShield", { Text = "Fast Shield (speed equip)", Default = false, Tooltip = "Speeds the shield equip/raise/block animation so blocking after a swing is near-instant. Speed-up only, safe. (Default: OFF)" }); C("bbFastShield")
+		gFS:AddSlider("bbFastShieldX", { Text = "Speed x", Min = 2, Max = 30, Default = 8, Rounding = 0 }); C("bbFastShieldX")
+		local FS_W = { "equip", "shield", "raise", "block", "guard" }
+		local fsSped = setmetatable({}, { __mode = "k" })
+		ctx:Connect(RunService.Heartbeat, function()
+			local on = Toggles.bbFastShield and Toggles.bbFastShield.Value
+			local hum = lPlayer.Character and lPlayer.Character:FindFirstChildWhichIsA("Humanoid")
+			local an = hum and hum:FindFirstChildOfClass("Animator")
+			if not on then
+				for t in pairs(fsSped) do pcall(function() t:AdjustSpeed(1) end); fsSped[t] = nil end
+				return
+			end
+			if not an then return end
+			pcall(function()
+				for _, t in ipairs(an:GetPlayingAnimationTracks()) do
+					local nm = tostring(t.Name):lower()
+					for _, w in ipairs(FS_W) do
+						if nm:find(w, 1, true) then
+							pcall(function() t:AdjustSpeed((Options.bbFastShieldX and Options.bbFastShieldX.Value) or 8) end); fsSped[t] = true; break
+						end
+					end
+				end
+			end)
+		end)
+
 		pluginCleanup = function()
+			pcall(function() for t in pairs(fsSped) do pcall(function() t:AdjustSpeed(1) end) end end)
 			pcall(restoreReach)
 			pcall(function() if blockHeld then setBlock(false) end end)
 			pcall(function()
