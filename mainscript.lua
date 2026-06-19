@@ -1739,6 +1739,7 @@ Library.ToggleKeybind = Options.menuKeybind
 -- Plugin keybind registry: plugins call Bridge:AddKeybind on load and clear on unload.
 Bridge.KeybindBox = keybindTab:AddRightGroupbox("Plugin Keybinds")
 Bridge.KeybindBox:AddLabel("Enabled plugins register their\nkeybinds here (waypoints, etc.).", true)
+Bridge.KeybindBox:AddToggle("disablePluginKeybinds", { Text = "Disable plugin keybinds", Default = false, Tooltip = "Master switch -- when ON, every plugin keybind below is ignored (the keys do nothing). Toggles/buttons still work. (Default: OFF)" })
 Bridge.KeybindCallbacks = {}
 Bridge._kbMade = {}
 -- id: unique key, text: label, default: key string, mode: "Toggle"/"Hold", cb: function(state)
@@ -1749,7 +1750,7 @@ function Bridge:AddKeybind(id, text, default, mode, cb)
 	self._kbMade[id] = true
 	pcall(function()
 		self.KeybindBox:AddLabel(text):AddKeyPicker(id, { Default = default or "", Mode = mode or "Toggle", Text = text,
-			Callback = function(state) local fn = self.KeybindCallbacks[id]; if fn then pcall(fn, state) end end })
+			Callback = function(state) if Toggles.disablePluginKeybinds and Toggles.disablePluginKeybinds.Value then return end; local fn = self.KeybindCallbacks[id]; if fn then pcall(fn, state) end end })
 	end)
 end
 function Bridge:ClearKeybind(id) if self.KeybindCallbacks then self.KeybindCallbacks[id] = nil end end
@@ -3812,6 +3813,11 @@ pcall(function()
 		"AnimCancel fix + auto-bow recon. AnimCancel now RESTORES sped-up tracks to normal speed when you disable it (was leaving looping anims fast -> bugged character) and defaults to Speed-up (Stop bricks state-machine melee). Toward the user's auto-bow idea (legit ProjectileID from firing the bow -> PHit it at the crosshair target, sidestepping 'ProjectileID missing'): the BB Capture now shows binary/serialized packet args as length+printable+HEX (decodable) and, during the window, auto-dumps every spawned arrow/projectile instance's attributes + child values (where the server-issued ProjectileID lives). Capture prompt now says FIRE A BOW at an enemy (the swing-only captures missed CreateProjectile/PHit).",
 		"Bleeding Blades: Bow Silent Aim (homing) -- the no-forge method. When you fire and a new arrow spawns near you, it's steered into the nearest FOV enemy (AssemblyLinearVelocity + CFrame toward target). If the arrow is client-owned this curves it into the target and the game's OWN hit + PHit fire legit -- no forging, no 'ProjectileID missing'. If the server simulates the arrow it's a harmless no-op. FOV + range sliders. Also: AnimCancel default keywords are now PROJECTILE-SAFE (dropped the melee swing/slash/stab words that brick BB's sword state machine even with Speed-up); add them back per-game if needed.",
 		"Dot ESP: Dynamic Sizing. New toggle scales each dot by camera depth -- base size far away (keeps current visibility) and bigger up close (with a 'Close-up scale x' cap), so close dots stop getting lost against the player. radius = size * clamp(120/depth, 1, maxScale).",
+		"Bleeding Blades: precise parry foundation + Fast Shield. Auto-parry now triggers on the enemy's ACTUAL swing (reads their playing animation via Animator:GetPlayingAnimationTracks -> swinging/blocking) instead of just proximity -- enemyAnimState() detects swing/block anim names; incomingThreat blocks when they swing or point-blank. New Enemy Combat State group: live readout (SWINGING/BLOCKING/action) of the nearest enemy + 'Dump Enemy Anims' (their playing anim names+ids -> file) to LEARN the swing/block/direction names for a fully directional parry/attack. New Fast Shield: speeds the local shield/equip/raise/block animation (Speed-up, restores on off) to kill the ~1s post-swing block delay. Full directional matching + auto-attack-the-open-direction needs the learned anim->direction map from the dump.",
+		"Keybinds: 'Disable plugin keybinds' master toggle in the Plugin Keybinds box -- when ON, every plugin keybind (BB Pick K / Ghost Strike F / Cycle T / Hold G / etc.) is ignored at the callback, so the keys do nothing. Toggles/buttons still work. Persists. You can also still rebind/clear an individual keypicker by clicking it.",
+		"Remote Spy plugin (tab 'Spy', 27th plugin) -- consolidated SimpleSpy + Hydroxide-style remote tool (both are archived now), up to date with the Potassium API. Logs outgoing FireServer/InvokeServer + their args + the CALLING SCRIPT (getcallingscript). 'Generate Script -> file + clipboard' turns any captured call into runnable Lua (a real serializer: Instances as game:GetService(...):FindFirstChild(...), Vector3/Vector2/CFrame/Color3/UDim2/Enum/BrickColor as constructors, tables recursive) -- SimpleSpy's Remote->Script. Block/Ignore a remote by name, Replay a call. New requested button 'Download all remotes/functions -> .txt' dumps every Remote/Bindable (incl. nil-parented via getnilinstances) + every Script/ModuleScript + a GC function count. Combines the old Sniffer + Remote replay; opt-in __namecall hook (detectable, OFF by default, in PANIC). Plus a Closure Scanner (Hydroxide's upvalue scanner, LinoriaLib-adapted): scan getgc for Lua closures -> filter by name/source -> dropdown by name+upvalue-count -> Dump upvalues+constants to .txt + Set Upvalue (debug.setupvalue). The interactive tree-view GUI isn't possible in this menu, but the scan/dump/modify capability is all here.",
+		"Packet Cracker plugin (tab 'Packets', 28th plugin) -- THE serializer cracker, the revolutionary one. Serialized-remote games (BB/TREK/ByteNet/Blink/Squash) pack args into a binary buffer, so captures are unreadable + forged packets get rejected ('ProjectileID missing'). This (1) finds the game's OWN serialize/deserialize functions by scanning the GC for closures named serialize/deserialize/pack/unpack/encode/decode/read/write + serializer-named ModuleScripts; (2) DECODES the last packet Remote Spy captured (Bridge.SpyLastPacket) with a chosen decoder -> reveals the real fields; (3) ENCODES a forged packet from a Lua table using the game's encoder -> structurally valid -> fires it at Spy's last remote (PHit/CreateProjectile). Because it reuses the game's own serializer, forged packets pass the serialization wall. Experimental + game-specific. Loop: Spy captures PHit -> Decode -> edit target/id -> Encode -> Fire. RemoteSpy now exposes Bridge.SpyLastPacket/SpyLastRemote/SpyLastMethod for it.",
+		"Serializer upgrade (Remote Spy + Packet Cracker): ported 78n/SimpleSpy's value serializer + Upbolt/Hydroxide's closure scanner from the REAL source, not screenshots. One robust serializer is now built once onto the Bridge (Bridge.Serialize/PathTo/GetNilHelper) so both plugins share it -- no drift, no load-order dependency. New coverage vs the old homegrown impl: buffers round-trip via buffer.fromstring/tostring (were dropped -- critical for BB's binary combat packets), inf/nan emit math.huge / 0/0 (were invalid Lua that wouldn't reload), floats use %.17g full precision (Vector3/CFrame components round-trip exactly), nil-parented instances resolve through an emitted getNil() over getnilinstances(), valid identifiers use .Name while weird names use :FindFirstChild, and the previously-missing userdata types are handled (NumberSequence/ColorSequence/PhysicalProperties/Ray/Region3/NumberRange/Rect/TweenInfo/Font/DateTime/Vector3int16/Vector2int16/Enum). The Closure Scanner now dedupes by closure object (Hydroxide) and skips executor closures. Packet Cracker's Decode renders the decoded fields as reconstructable Lua via the same serializer. Every executor global is feature-detected for Potassium and pcall-wrapped.",
 	}
 	local function verNum(i) return 1 + 0.5 * (i - 1) end
 	local function fmtV(n) return "V" .. (n == math.floor(n) and tostring(math.floor(n)) or tostring(n)) end
@@ -3980,7 +3986,7 @@ pcall(function()
 	local HttpService = game:GetService("HttpService")
 	local PG_FILE = "CryptsHBE_Game_" .. tostring(game.PlaceId) .. ".json"
 	local PG_KEYS = {
-		"MasterToggle","extenderToggled","extenderSize","extenderTransparency","hitboxShape",
+		"disablePluginKeybinds","MasterToggle","extenderToggled","extenderSize","extenderTransparency","hitboxShape",
 		"partSpecificSizing","headSize","torsoSize","limbSize","dynamicSizing","smoothTransitions",
 		"transitionSpeed","collisionsToggled","outlineMode","outlineTransparency","maxDistance",
 		"closestTargetsOnly","maxTargets","updateRate","perfAdaptive","perfFpsFloor","randomizationToggled","randomizationAmount",
@@ -4028,7 +4034,8 @@ pcall(function()
 			"bbBlockFace","bbGhostCamLock","bbArrowPredict","bbArrowSpeed","bbArrowDrop",
 			"blackoutOverlay","blackoutAuto","blackoutWords",
 			"bbArrowAmmo","bbArrowAmt","bbArrowName","bbReach","bbReachX","bbGhostEnabled",
-			"bbBowAim","bbBowFov","bbBowRange",
+			"bbBowAim","bbBowFov","bbBowRange","bbFastShield","bbFastShieldX",
+			"spyFilter","spyFnFilter","pcInput",
 	}
 	local g = profilesTab:AddLeftGroupbox("Per-Game Profile")
 	g:AddLabel("Game PlaceId: " .. tostring(game.PlaceId), true)
@@ -4087,7 +4094,7 @@ pcall(function()
 			"veHold", "veInspect", "hitMarkerEnabled", "secFinished", "secApplyDist",
 			"weaponForceAuto", "weaponAutoFire", "sniffActive", "engAutoSwing", "engInstantBuild",
 			"ecoAutoFarm", "worldMarkers", "sniffAutoReplay", "animCancelEnabled", "dotEspEnabled",
-			"bbWalkEnabled", "bbAutoBlock", "bbServerMonitor",
+			"bbWalkEnabled", "bbAutoBlock", "bbServerMonitor", "spyActive",
 		}) do
 			pcall(function() if Toggles[k] then Toggles[k]:SetValue(false) end end)
 		end
@@ -5970,6 +5977,8 @@ pcall(function()
 	Bridge:RegisterPluginSource("DotESP",    { tab = "Dots",      file = "dotesp.lua",    url = RAW .. "dotesp.lua",      desc = "Dot ESP: small team-coloured dots floating above players' heads (teammates and/or enemies), on a toggle hotkey (default V). Own distance, honours Streamer + menu-hide. Read-only screen projection." })
 	Bridge:RegisterPluginSource("BleedingBlades", { tab = "Blades", file = "bleedingblades.lua", url = RAW .. "bleedingblades.lua", desc = "Bleeding Blades toolkit: pick any model -> its remotes, fire Combat remotes (PHit hit / CreateProjectile arrow / Mount), watch server messages (Invalid Attack / Fall damage), subtle walk speed, and an experimental DirectionUI-based auto-block for the directional parry." })
 	Bridge:RegisterPluginSource("Blackout",  { tab = "Blackout",  file = "blackout.lua",   url = RAW .. "blackout.lua",    desc = "Anti-detection blackout: one key hides every cheat visual + menu (+ optional full black overlay) so the screen looks vanilla; Auto-Blackout fires on an anti-cheat word + disables risky features; UI cloak keeps the menu under gethui()." })
+	Bridge:RegisterPluginSource("RemoteSpy", { tab = "Spy",       file = "remotespy.lua",  url = RAW .. "remotespy.lua",   desc = "Consolidated remote spy (SimpleSpy + Hydroxide style, up to date): log outgoing FireServer/InvokeServer + the calling script, generate a runnable Lua script for any call (Remote->Script, to file+clipboard), Block/Ignore/Replay, 'Download all remotes/functions -> .txt', + a Closure/Upvalue Scanner. Opt-in __namecall hook (detectable)." })
+	Bridge:RegisterPluginSource("PacketCracker", { tab = "Packets", file = "packetcracker.lua", url = RAW .. "packetcracker.lua", desc = "Serializer cracker: finds the game's OWN serialize/deserialize funcs (GC + module scan) and reuses them to DECODE the binary packet Remote Spy captured (see PHit's real fields) and ENCODE a forged one to fire. Cracks serialized-remote games (BB/TREK/ByteNet). Experimental." })
 
 	-- Plugins load on demand: their tabs + features DON'T EXIST until enabled, so an
 	-- absent Aimbot/Precision tab just looks broken. Make "they're off" obvious with a
