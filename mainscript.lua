@@ -1373,7 +1373,7 @@ espAdvancedGroupbox:AddToggle("espDistanceFade", { Text = "Distance Fade", Defau
 espAdvancedGroupbox:AddSlider("espOverlapGap", { Text = "Overlap Spacing", Min = 8, Max = 40, Default = 16, Rounding = 0, Tooltip = "Vertical pixels enforced between names by Anti-Overlap. (Default: 16)" })
 espAdvancedGroupbox:AddToggle("espSkeletonToggled", { Text = "Skeleton ESP", Default = false, Tooltip = "Draw lines between the character's bones. (Default: OFF)" }):OnChanged(updatePlayers)
 espAdvancedGroupbox:AddToggle("espOffscreenToggled", { Text = "Off-Screen Markers", Default = false, Tooltip = "Show an edge marker pointing toward off-screen players. (Default: OFF)" }):OnChanged(updatePlayers)
-espAdvancedGroupbox:AddToggle("espOffscreenPulse", { Text = "Proximity Pulse", Default = true, Tooltip = "Off-screen markers pulse (size + slight brighten) more as the\nplayer gets closer -- a subtle 'they're near' indicator. (Default: ON)" })
+espAdvancedGroupbox:AddToggle("espOffscreenPulse", { Text = "Distance Scaling", Default = true, Tooltip = "Off-screen markers scale STEADILY by distance -- closer = bigger + redder\n(no more constant pulsing). A player aiming at you (Threat plugin) turns the\nmarker bold red + blinks. (Default: ON)" })
 espAdvancedGroupbox:AddToggle("espHalfRate", { Text = "Half-Rate ESP (perf)", Default = false, Tooltip = "Redraw ESP every other frame (~30fps) instead of every frame.\nRoughly halves ESP CPU cost; slight position lag. (Default: OFF)" })
 espAdvancedGroupbox:AddToggle("espTracerToggled", { Text = "Tracer Lines", Default = false, Tooltip = "Show lines from screen center to players. (Default: OFF)" }):OnChanged(updatePlayers)
 espAdvancedGroupbox:AddLabel("Tracer Color"):AddColorPicker("espTracerColor", { Title = "Tracer Color", Default = Color3.fromRGB(255, 0, 0) })
@@ -3004,7 +3004,7 @@ function addPlayer(player)
 	end
 
 	local chams = Instance.new("Highlight")
-	chams.Parent = game:GetService("CoreGui")
+	chams.Parent = getSafeGuiParent()  -- gethui, NOT raw CoreGui: some executors/AC strip Highlights under CoreGui -> "no chams" on custom-rig games
 
 	-- Expose the drawing objects on the player record so the name-declutter pass
 	-- and add-ons can reach them (they're otherwise closure-local upvalues).
@@ -3289,10 +3289,16 @@ function addPlayer(player)
 					local sz, col = 10, baseCol
 					if Toggles.espOffscreenPulse and Toggles.espOffscreenPulse.Value then
 						local ref = (maxEspDist > 0 and maxEspDist) or 500
-						local p = math.clamp(1 - distance / ref, 0, 1); p = p * p  -- ramp up only when close
-						local wave = math.sin(tick() * (6 + p * 10)) * 0.5 + 0.5
-						sz = 10 + 8 * p * wave
-						col = baseCol:Lerp(Color3.fromRGB(255, 255, 255), 0.4 * p * wave)
+						local p = math.clamp(1 - distance / ref, 0, 1)
+						-- (steady distance scaling -- the constant pulse oscillation was removed)
+						sz = 10 + 14 * p
+						col = baseCol:Lerp(Color3.fromRGB(255, 0, 0), p)  -- closer = redder
+					end
+-- Threat override: this player is aiming at you (published by the Threat plugin) -> bold red + blink.
+					if Bridge.ThreatAimers and Bridge.ThreatAimers[player] then
+						local blink = 0.5 + 0.5 * math.abs(math.sin(tick() * 9))
+						sz = math.max(sz, 16) + 6 * blink
+						col = Color3.fromRGB(255, 0, 0):Lerp(Color3.fromRGB(255, 210, 0), 1 - blink)
 					end
 					offscreenMarker.Size = Vector2.new(sz, sz)
 					offscreenMarker.Position = Vector2.new(markerPos.X - sz / 2, markerPos.Y - sz / 2)
@@ -3820,6 +3826,7 @@ pcall(function()
 		"Serializer upgrade (Remote Spy + Packet Cracker): ported 78n/SimpleSpy's value serializer + Upbolt/Hydroxide's closure scanner from the REAL source, not screenshots. One robust serializer is now built once onto the Bridge (Bridge.Serialize/PathTo/GetNilHelper) so both plugins share it -- no drift, no load-order dependency. New coverage vs the old homegrown impl: buffers round-trip via buffer.fromstring/tostring (were dropped -- critical for BB's binary combat packets), inf/nan emit math.huge / 0/0 (were invalid Lua that wouldn't reload), floats use %.17g full precision (Vector3/CFrame components round-trip exactly), nil-parented instances resolve through an emitted getNil() over getnilinstances(), valid identifiers use .Name while weird names use :FindFirstChild, and the previously-missing userdata types are handled (NumberSequence/ColorSequence/PhysicalProperties/Ray/Region3/NumberRange/Rect/TweenInfo/Font/DateTime/Vector3int16/Vector2int16/Enum). The Closure Scanner now dedupes by closure object (Hydroxide) and skips executor closures. Packet Cracker's Decode renders the decoded fields as reconstructable Lua via the same serializer. Every executor global is feature-detected for Potassium and pcall-wrapped.",
 		"Merged Packet Cracker into the Remote Spy plugin (one 'Spy' tab) so the whole crack loop -- capture -> decode -> forge -> fire -- lives in one place instead of two tabs. The Packet Cracker's three groupboxes (Find Serializer / Decode / Forge + Fire) are now part of remotespy.lua; the separate 'Packets' plugin/tab is retired (packetcracker.lua is a tombstone). Also added an 'Auto-refresh list' toggle (default ON) so the Captured-call dropdown repopulates itself ~1x/sec on a Heartbeat as calls arrive -- no more pressing Refresh List to see a call. Reminder for capturing: enable RemoteSpy, turn ON 'Spy Active' BEFORE the in-game action, do the action once, then pick from the dropdown.",
 		"Folded the Remote Sniffer + Remote Replay plugins into the Remote Spy plugin too, so ALL remote tooling lives on one 'Spy' tab (plugin list 28 -> 26). From the Sniffer: a 'Combat/economy only' name filter (hit/damage/shoot/buy/...), 'Auto-Replay (farm)' + rate on the selected captured call, 'Retarget replay -> nearest enemy' (swaps Player args -> nearest enemy and Vector3 args -> their position), and 'Save capture log (busiest) -> .txt'. From Remote Replay: a 'Manual Replay (no capture)' groupbox -- pick any RemoteEvent + an arg type (Character/Player/HRP/Position/None), Fire at Nearest or Auto-Fire aura with range + rate, honeypot-guarded. The duplicate __namecall hook + name filter were dropped (the Spy's own hook already covers them). remotesniffer.lua + remotereplay.lua are now tombstones; the 'Sniffer' and 'Remote' tabs are gone. Reused the existing sniff*/rr* persistence + PANIC keys (no new keys).",
+		"ESP + awareness pass for custom-rig FPS games (e.g. TTK Testing). (1) Chams fix: the cham Highlight now parents via gethui() (getSafeGuiParent) instead of raw CoreGui -- some executors/anti-cheats strip Highlights under CoreGui, which is why chams showed nothing on custom rigs while ESP worked. (2) Off-screen markers: removed the constant sine PULSE (was always blinking); markers now scale STEADILY by distance -- closer = bigger + redder -- and a player who is aiming at you turns their marker bold red + blinking. (3) NEW Threat / Early-Warning plugin (tab 'Threat'): warns when another player's facing/look-vector points at you within an adjustable cone, line-of-sight gated, behind-you (outside your camera FOV) prioritised. Surfaces as a screen-edge direction marker+line toward each unseen aimer, a pulsing red-vignette flash, an optional beep, and an optional auto-snap-camera to a new behind-you aimer (+ a 'Snap to Threat' keybind, default H). Publishes Bridge.ThreatAimers for the core ESP markers. Client-side read only (camera snap is the only self-view touch; OFF by default, in PANIC).",
 	}
 	local function verNum(i) return 1 + 0.5 * (i - 1) end
 	local function fmtV(n) return "V" .. (n == math.floor(n) and tostring(math.floor(n)) or tostring(n)) end
@@ -4038,6 +4045,7 @@ pcall(function()
 			"bbArrowAmmo","bbArrowAmt","bbArrowName","bbReach","bbReachX","bbGhostEnabled",
 			"bbBowAim","bbBowFov","bbBowRange","bbFastShield","bbFastShieldX",
 			"spyFilter","spyFnFilter","pcInput","spyAutoRefresh",
+			"threatEnabled","threatConeAngle","threatRange","threatLOS","threatBehindOnly","threatEdgeWarn","threatFlash","threatSound","threatSoundId","threatAutoSnap","threatSnapCooldown",
 	}
 	local g = profilesTab:AddLeftGroupbox("Per-Game Profile")
 	g:AddLabel("Game PlaceId: " .. tostring(game.PlaceId), true)
@@ -4096,7 +4104,7 @@ pcall(function()
 			"veHold", "veInspect", "hitMarkerEnabled", "secFinished", "secApplyDist",
 			"weaponForceAuto", "weaponAutoFire", "sniffActive", "engAutoSwing", "engInstantBuild",
 			"ecoAutoFarm", "worldMarkers", "sniffAutoReplay", "animCancelEnabled", "dotEspEnabled",
-			"bbWalkEnabled", "bbAutoBlock", "bbServerMonitor", "spyActive", "spyAutoRefresh",
+			"bbWalkEnabled", "bbAutoBlock", "bbServerMonitor", "spyActive", "spyAutoRefresh", "threatEnabled", "threatAutoSnap",
 		}) do
 			pcall(function() if Toggles[k] then Toggles[k]:SetValue(false) end end)
 		end
@@ -5980,6 +5988,7 @@ pcall(function()
 	Bridge:RegisterPluginSource("BleedingBlades", { tab = "Blades", file = "bleedingblades.lua", url = RAW .. "bleedingblades.lua", desc = "Bleeding Blades toolkit: pick any model -> its remotes, fire Combat remotes (PHit hit / CreateProjectile arrow / Mount), watch server messages (Invalid Attack / Fall damage), subtle walk speed, and an experimental DirectionUI-based auto-block for the directional parry." })
 	Bridge:RegisterPluginSource("Blackout",  { tab = "Blackout",  file = "blackout.lua",   url = RAW .. "blackout.lua",    desc = "Anti-detection blackout: one key hides every cheat visual + menu (+ optional full black overlay) so the screen looks vanilla; Auto-Blackout fires on an anti-cheat word + disables risky features; UI cloak keeps the menu under gethui()." })
 	Bridge:RegisterPluginSource("RemoteSpy", { tab = "Spy",       file = "remotespy.lua",  url = RAW .. "remotespy.lua",   desc = "Consolidated remote spy (SimpleSpy + Hydroxide style, up to date): log outgoing FireServer/InvokeServer + the calling script, generate a runnable Lua script for any call (Remote->Script, to file+clipboard), Block/Ignore/Replay, 'Download all remotes/functions -> .txt', + a Closure/Upvalue Scanner, + the merged Packet Cracker (find the game's OWN serializer -> DECODE the captured binary packet -> forge + fire) with SimpleSpy/Hydroxide-grade serializer + auto-refreshing capture list. Opt-in __namecall hook (detectable)." })
+	Bridge:RegisterPluginSource("Threat", { tab = "Threat", file = "threat.lua", url = RAW .. "threat.lua", desc = "Early-warning / awareness system: warns when another player is AIMING AT YOU (their look-vector points at you within a cone), line-of-sight gated, behind-you prioritised. Screen-edge direction warning + red-vignette flash + beep + optional auto-snap camera + a Snap-to-Threat key. Also turns that player's off-screen ESP marker bold red. Client-side read; OFF by default." })
 	-- PacketCracker MERGED into RemoteSpy (2026-06-19): the crack loop (find serializer / decode / forge+fire) now lives on the "Spy" tab, so there is no separate "Packets" plugin/tab.
 
 	-- Plugins load on demand: their tabs + features DON'T EXIST until enabled, so an
